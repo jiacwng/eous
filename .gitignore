@@ -1,0 +1,31 @@
+# local working notes
+/local
+/docs
+/research
+
+
+# environments
+.venv/
+
+# python
+__pycache__/
+*.py[cod]
+
+# packaging
+dist/
+build/
+*.egg-info/
+
+# tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# corpus and measurement data
+data/
