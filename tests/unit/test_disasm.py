@@ -1,3 +1,4 @@
+import struct
 from pathlib import Path
 
 import pytest
@@ -326,6 +327,47 @@ def test_every_fixture_sweeps(name: str) -> None:
     assert result.chunks
     assert all(chunk for chunk in result.chunks)
     assert all(report.skipped is None for report in result.reports)
+
+
+# A packed or hostile ELF commonly ships with its section table stripped. The loader
+# falls back to the executable segments, and the sweep reads them the same way it reads
+# sections. This case crosses from L1 into L2, so it lives here.
+def make_stripped_elf(code: bytes) -> bytes:
+    header = bytearray(64)
+    header[0:4] = b"\x7fELF"
+    header[4:8] = bytes((2, 1, 1, 0))
+    struct.pack_into("<HHI", header, 16, 2, 62, 1)
+    struct.pack_into("<Q", header, 24, 0x400078)
+    struct.pack_into("<Q", header, 32, 64)
+    struct.pack_into("<Q", header, 40, 0)
+    struct.pack_into("<HHHHHH", header, 52, 64, 56, 1, 0, 0, 0)
+
+    program = bytearray(56)
+    struct.pack_into("<II", program, 0, 1, 0x5)
+    struct.pack_into("<QQQ", program, 8, 120, 0x400078, 0x400078)
+    struct.pack_into("<QQQ", program, 32, len(code), len(code), 0x1000)
+
+    return bytes(header) + bytes(program) + code
+
+
+def test_a_stripped_elf_sweeps_to_real_mnemonics(tmp_path: Path) -> None:
+    target = tmp_path / "stripped.elf"
+    target.write_bytes(make_stripped_elf((XOR_EAX + RET) * 20))
+
+    result = disasm.sweep(loader.load(target))
+    assert result.total_decoded == 40
+    assert result.chunks == (("xor", "ret"),) * 20
+    assert result.reports[0].skipped is None
+
+
+def test_a_stripped_elf_sweeps_the_same_way_as_a_sectioned_one(tmp_path: Path) -> None:
+    code = (XOR_EAX + RET) * 20
+    target = tmp_path / "stripped.elf"
+    target.write_bytes(make_stripped_elf(code))
+
+    from_segment = disasm.sweep(loader.load(target))
+    from_section = disasm.sweep(binary(section(code, virtual_address=0x400078), arch="x86-64"))
+    assert from_segment.chunks == from_section.chunks
 
 
 def test_a_fixture_sweeps_the_same_way_twice() -> None:
