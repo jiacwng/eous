@@ -74,9 +74,7 @@ def test_compiled_fixtures_read_as_native(fixture_case: tuple[Path, str, str]) -
     assert binary.has_managed_native is False
 
 
-# The count is of functions. Counting PE libraries would report 7 for a binary importing
-# 35 functions, and the packing indicator for few imports would then fire on ordinary
-# clean software.
+# Counting PE libraries would report 7 for a binary importing 35 functions.
 @pytest.mark.parametrize(
     ("name", "expected"),
     [("fixture-pe-x64.exe", 35), ("fixture-pe-x86.exe", 34)],
