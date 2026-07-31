@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "pytest-cov>=5",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
@@ -35,3 +36,22 @@ packages = ["eous"]
 
 [tool.setuptools.package-data]
 eous = ["data/*.json"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is the pytest idiom
+"tests/**" = ["S101"]
+
+[tool.mypy]
+files = ["src"]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=eous --cov-report=term-missing --cov-fail-under=90"
