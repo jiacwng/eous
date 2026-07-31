@@ -74,9 +74,9 @@ def test_compiled_fixtures_read_as_native(fixture_case: tuple[Path, str, str]) -
     assert binary.has_managed_native is False
 
 
-# The count is of functions, never of libraries. Counting PE libraries would report 7 for
-# a binary importing 35 functions, and the packing indicator for few imports would then
-# fire on ordinary clean software.
+# The count is of functions. Counting PE libraries would report 7 for a binary importing
+# 35 functions, and the packing indicator for few imports would then fire on ordinary
+# clean software.
 @pytest.mark.parametrize(
     ("name", "expected"),
     [("fixture-pe-x64.exe", 35), ("fixture-pe-x86.exe", 34)],
@@ -245,8 +245,8 @@ def test_unsupported_errors_are_loader_errors(tmp_path: Path) -> None:
 
 
 def make_stripped_elf(code: bytes, machine: int = 62) -> bytes:
-    # An ELF64 carrying one loadable executable segment and no section table, which is the
-    # ordinary shape of a packed or hostile ELF.
+    # An ELF64 carrying one loadable executable segment, with the section table stripped.
+    # This is the ordinary shape of a packed or hostile ELF.
     header = bytearray(64)
     header[0:4] = b"\x7fELF"
     header[4:8] = bytes((2, 1, 1, 0))
@@ -411,6 +411,6 @@ def test_unreadable_cor20_falls_back_to_presence() -> None:
     assert loader.read_clr(fake) == (True, False, False)
 
 
-def test_shannon_never_exceeds_eight() -> None:
+def test_shannon_stays_within_eight_bits() -> None:
     counts = [i for i in range(256)]
     assert loader.shannon(counts) <= 8.0 + math.ulp(8.0)

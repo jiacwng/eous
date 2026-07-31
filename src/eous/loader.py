@@ -26,14 +26,14 @@ lief.logging.disable()
 # by design (Mantovani et al., NDSS 2020).
 ENTROPY_THRESHOLD = 7.2
 
-# Entropy is compared after rounding, so a value differing only in its last bits across
-# platform maths libraries cannot flip the swept-or-skipped decision and change a digest.
+# Entropy is compared after rounding, which holds the swept-or-skipped decision steady
+# across platform maths libraries and keeps one file yielding one digest everywhere.
 ENTROPY_DECIMALS = 6
 
 SUPPORTED_FORMATS = ("pe", "elf")
 SUPPORTED_ARCHES = ("x86", "x86-64")
 
-# One megabyte per read, so entropy of a large file never loads it whole. Implementation
+# One megabyte per read, so entropy of a large file works block by block. Implementation
 # detail: the value affects memory alone, and the result is identical at any block size.
 ENTROPY_BLOCK = 1 << 20
 
@@ -154,8 +154,8 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
         header = b""
 
     if len(header) < COR20_MINIMUM:
-        # The directory exists, so the file is managed. Whether native code rides along
-        # stays unknown, and an unknown reads as absent.
+        # The directory exists, so the file is managed. The native-code question stays
+        # open here, and an open question reads as False.
         return (True, False, False)
 
     # The first field states the header's own size, which ECMA-335 fixes at 72 bytes for
@@ -171,7 +171,7 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
 
     il_only = bool(flags & COR20_IL_ONLY)
     # A non-empty ManagedNativeHeader means precompiled native code, whatever the IL-only
-    # bit claims. Size alone decides, so the gate errs toward looking rather than refusing.
+    # bit claims. Size alone decides, so the gate errs toward looking at the file.
     has_native = native_size != 0
     return (True, il_only, has_native)
 
@@ -226,9 +226,9 @@ def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
         entry_point=parsed.optional_header.addressof_entrypoint,
         sections=sections,
         has_section_table=bool(sections),
-        # Functions rather than libraries, so the count means the same thing in both
-        # formats. Counting PE libraries would put a clean binary at 7 where its function
-        # count is 35, and the packing indicator for few imports would fire on it.
+        # The count is of functions, so it carries one meaning in both formats. Counting
+        # PE libraries would put a clean binary at 7 where its function count is 35, and
+        # the packing indicator for few imports would then fire on it.
         import_count=len(parsed.imported_functions),
         is_managed=is_managed,
         is_il_only=is_il_only,
