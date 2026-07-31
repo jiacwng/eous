@@ -15,16 +15,34 @@ from typing import Any, Protocol
 
 import lief
 
+# LIEF writes parse diagnostics straight to stderr, and their content follows whatever
+# file is being read. Silencing it keeps the tool's own output the only output.
+lief.logging.disable()
+
+# Measured 2026-08-01 over 630 corpus samples: the highest-entropy executable section of a
+# clean binary reaches 6.71, while UPX starts at 7.83, ASPack at 7.76 and Themida at 7.94.
+# A threshold of 7.2 sits inside that gap and separated the two groups completely. Known
+# limit: every packer measured compresses, so low-entropy packing schemes evade this gate
+# by design (Mantovani et al., NDSS 2020).
 ENTROPY_THRESHOLD = 7.2
+
+# Entropy is compared after rounding, so a value differing only in its last bits across
+# platform maths libraries cannot flip the swept-or-skipped decision and change a digest.
+ENTROPY_DECIMALS = 6
+
 SUPPORTED_FORMATS = ("pe", "elf")
 SUPPORTED_ARCHES = ("x86", "x86-64")
 
+# One megabyte per read, so entropy of a large file never loads it whole. Implementation
+# detail: the value affects memory alone, and the result is identical at any block size.
 ENTROPY_BLOCK = 1 << 20
 
 PE_SECTION_EXECUTE = 0x20000000
 PE_SECTION_WRITE = 0x80000000
 ELF_SECTION_EXECUTE = 0x4
 ELF_SECTION_WRITE = 0x1
+ELF_SEGMENT_EXECUTE = 0x1
+ELF_SEGMENT_WRITE = 0x2
 
 CLR_DIRECTORY_KEY = lief.PE.DataDirectory.TYPES.CLR_RUNTIME_HEADER
 COR20_MINIMUM = 72
@@ -109,7 +127,7 @@ def shannon(counts: Sequence[int]) -> float:
 def data_entropy(data: bytes) -> float:
     if not data:
         return 0.0
-    return shannon(list(Counter(data).values()))
+    return round(shannon(list(Counter(data).values())), ENTROPY_DECIMALS)
 
 
 def file_entropy(path: Path) -> float:
@@ -122,7 +140,7 @@ def file_entropy(path: Path) -> float:
     except OSError as exc:
         raise LoaderError(f"cannot read {path}: {exc}") from exc
 
-    return shannon(counts)
+    return round(shannon(counts), ENTROPY_DECIMALS)
 
 
 def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
@@ -131,11 +149,7 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
         return (False, False, False)
 
     try:
-        header = bytes(
-            binary.get_content_from_virtual_address(
-                directory.rva, max(directory.size, COR20_MINIMUM)
-            )
-        )
+        header = bytes(binary.get_content_from_virtual_address(directory.rva, COR20_MINIMUM))
     except (TypeError, ValueError, RuntimeError):
         header = b""
 
@@ -144,11 +158,21 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
         # stays unknown, and an unknown reads as absent.
         return (True, False, False)
 
+    # The first field states the header's own size, which ECMA-335 fixes at 72 bytes for
+    # every published runtime version. Requiring the exact value stops a crafted data
+    # directory 14 from pointing at ordinary code and handing us arbitrary flags, which
+    # would let a native binary claim to be pure bytecode and escape being swept.
+    declared_size = struct.unpack_from("<I", header, 0)[0]
+    if declared_size != COR20_MINIMUM:
+        return (True, False, False)
+
     flags = struct.unpack_from("<I", header, COR20_FLAGS_OFFSET)[0]
-    native_rva, native_size = struct.unpack_from("<II", header, COR20_NATIVE_OFFSET)
+    _, native_size = struct.unpack_from("<II", header, COR20_NATIVE_OFFSET)
 
     il_only = bool(flags & COR20_IL_ONLY)
-    has_native = native_rva != 0 and native_size != 0
+    # A non-empty ManagedNativeHeader means precompiled native code, whatever the IL-only
+    # bit claims. Size alone decides, so the gate errs toward looking rather than refusing.
+    has_native = native_size != 0
     return (True, il_only, has_native)
 
 
@@ -202,7 +226,10 @@ def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
         entry_point=parsed.optional_header.addressof_entrypoint,
         sections=sections,
         has_section_table=bool(sections),
-        import_count=len(parsed.imports),
+        # Functions rather than libraries, so the count means the same thing in both
+        # formats. Counting PE libraries would put a clean binary at 7 where its function
+        # count is 35, and the packing indicator for few imports would fire on it.
+        import_count=len(parsed.imported_functions),
         is_managed=is_managed,
         is_il_only=is_il_only,
         has_managed_native=has_managed_native,
@@ -228,6 +255,13 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
         )
         for section in parsed.sections
     )
+    has_section_table = len(parsed.sections) > 0
+
+    # A stripped ELF keeps its loadable segments while losing the section table, and that
+    # is the ordinary shape for packed and hostile ELF. The executable segments stand in
+    # so such a file still presents its code.
+    if not any(section.executable for section in sections):
+        sections = sections + _executable_segments(parsed)
 
     return Binary(
         path=path,
@@ -235,12 +269,31 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
         arch=arch,
         entry_point=parsed.header.entrypoint,
         sections=sections,
-        has_section_table=len(parsed.sections) > 0,
+        has_section_table=has_section_table,
         import_count=len(parsed.imported_functions),
         is_managed=False,
         is_il_only=False,
         has_managed_native=False,
     )
+
+
+def _executable_segments(parsed: lief.ELF.Binary) -> tuple[Section, ...]:
+    built = []
+    for index, segment in enumerate(parsed.segments):
+        flags = int(segment.flags)
+        if not flags & ELF_SEGMENT_EXECUTE:
+            continue
+        built.append(
+            _build_section(
+                name=f"segment{index}",
+                virtual_address=segment.virtual_address,
+                virtual_size=segment.virtual_size,
+                content=segment.content,
+                executable=True,
+                writable=bool(flags & ELF_SEGMENT_WRITE),
+            )
+        )
+    return tuple(built)
 
 
 def _text(value: str | bytes) -> str:

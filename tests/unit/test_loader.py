@@ -74,9 +74,20 @@ def test_compiled_fixtures_read_as_native(fixture_case: tuple[Path, str, str]) -
     assert binary.has_managed_native is False
 
 
-def test_pe_fixtures_report_imports() -> None:
-    binary = loader.load(FIXTURES / "fixture-pe-x64.exe")
-    assert binary.import_count > 0
+# The count is of functions, never of libraries. Counting PE libraries would report 7 for
+# a binary importing 35 functions, and the packing indicator for few imports would then
+# fire on ordinary clean software.
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("fixture-pe-x64.exe", 35), ("fixture-pe-x86.exe", 34)],
+)
+def test_pe_import_count_counts_functions(name: str, expected: int) -> None:
+    assert loader.load(FIXTURES / name).import_count == expected
+
+
+def test_clean_fixtures_carry_enough_imports_to_look_unpacked() -> None:
+    for name in ["fixture-pe-x64.exe", "fixture-pe-x86.exe"]:
+        assert loader.load(FIXTURES / name).import_count >= 10
 
 
 def test_binary_is_frozen() -> None:
@@ -150,6 +161,20 @@ def test_entropy_threshold_sits_below_the_maximum() -> None:
     assert 0.0 < loader.ENTROPY_THRESHOLD < 8.0
 
 
+# Entropy decides whether a region is swept, so the value must land identically on any
+# platform maths library. Rounding removes the last bits from that decision.
+def test_entropy_is_rounded_to_a_fixed_precision() -> None:
+    value = loader.data_entropy(bytes(range(256)) * 7 + b"\x01\x02\x03")
+    assert value == round(value, loader.ENTROPY_DECIMALS)
+
+
+def test_file_and_data_entropy_agree_exactly(tmp_path: Path) -> None:
+    payload = bytes(range(256)) * 13 + b"\x07" * 11
+    target = tmp_path / "payload.bin"
+    target.write_bytes(payload)
+    assert loader.file_entropy(target) == loader.data_entropy(payload)
+
+
 def test_compiled_code_entropy_stays_under_the_threshold() -> None:
     binary = loader.load(FIXTURES / "fixture-pe-x64.exe")
     text = binary.executable_sections[0]
@@ -216,6 +241,58 @@ def test_unsupported_errors_are_loader_errors(tmp_path: Path) -> None:
     assert issubclass(UnsupportedArchError, LoaderError)
 
 
+# ---- stripped ELF -----------------------------------------------------------
+
+
+def make_stripped_elf(code: bytes, machine: int = 62) -> bytes:
+    # An ELF64 carrying one loadable executable segment and no section table, which is the
+    # ordinary shape of a packed or hostile ELF.
+    header = bytearray(64)
+    header[0:4] = b"\x7fELF"
+    header[4:8] = bytes((2, 1, 1, 0))
+    struct.pack_into("<HHI", header, 16, 2, machine, 1)
+    struct.pack_into("<Q", header, 24, 0x400078)
+    struct.pack_into("<Q", header, 32, 64)
+    struct.pack_into("<Q", header, 40, 0)
+    struct.pack_into("<HHHHHH", header, 52, 64, 56, 1, 0, 0, 0)
+
+    program = bytearray(56)
+    struct.pack_into("<II", program, 0, 1, 0x5)
+    struct.pack_into("<QQQ", program, 8, 120, 0x400078, 0x400078)
+    struct.pack_into("<QQQ", program, 32, len(code), len(code), 0x1000)
+
+    return bytes(header) + bytes(program) + code
+
+
+def test_a_stripped_elf_still_presents_its_code(tmp_path: Path) -> None:
+    code = (b"\x31\xc0" + b"\xc3") * 20
+    target = tmp_path / "stripped.elf"
+    target.write_bytes(make_stripped_elf(code))
+
+    binary = loader.load(target)
+    assert binary.format == "elf"
+    assert binary.arch == "x86-64"
+    assert binary.has_section_table is False
+    assert binary.executable_sections
+    assert b"".join(s.data for s in binary.executable_sections) == code
+
+
+def test_a_stripped_elf_sweeps_to_real_mnemonics(tmp_path: Path) -> None:
+    from eous import disasm
+
+    target = tmp_path / "stripped.elf"
+    target.write_bytes(make_stripped_elf((b"\x31\xc0" + b"\xc3") * 20))
+    result = disasm.sweep(loader.load(target))
+    assert result.total_decoded == 40
+    assert result.chunks[0] == ("xor", "ret")
+
+
+def test_a_binary_keeping_its_sections_ignores_the_segment_fallback() -> None:
+    binary = loader.load(FIXTURES / "fixture-elf-x64")
+    assert binary.has_section_table
+    assert all(not s.name.startswith("segment") for s in binary.executable_sections)
+
+
 # ---- CLR --------------------------------------------------------------------
 
 
@@ -265,6 +342,9 @@ class FakePE:
         return self._content[:size]
 
 
+COR20_IL_ONLY = 0x1
+
+
 def make_cor20(flags: int, native_rva: int = 0, native_size: int = 0) -> bytes:
     header = bytearray(72)
     struct.pack_into("<I", header, 0, 72)
@@ -275,6 +355,28 @@ def make_cor20(flags: int, native_rva: int = 0, native_size: int = 0) -> bytes:
 
 def test_absent_clr_directory_reads_as_native() -> None:
     assert loader.read_clr(FakePE(0, 0, b"")) == (False, False, False)
+
+
+# Data directory 14 is attacker-controlled. Pointing it at ordinary code would otherwise
+# hand the loader arbitrary flags, letting a native binary claim to be pure bytecode and
+# so escape being disassembled.
+def test_a_header_declaring_an_impossible_size_is_distrusted() -> None:
+    forged = bytearray(make_cor20(flags=COR20_IL_ONLY))
+    struct.pack_into("<I", forged, 0, 0xDEADBEEF)
+    assert loader.read_clr(FakePE(0x2000, 72, bytes(forged))) == (True, False, False)
+
+
+def test_arbitrary_code_bytes_are_distrusted_as_a_header() -> None:
+    text = bytes(range(72))
+    managed, il_only, native = loader.read_clr(FakePE(0x2000, 72, text))
+    assert (managed, il_only, native) == (True, False, False)
+
+
+# The spec biases toward looking: a non-empty ManagedNativeHeader means precompiled native
+# code whatever the IL-only bit says, and size alone settles it.
+def test_a_native_header_with_a_zero_address_still_counts() -> None:
+    fake = FakePE(0x2000, 72, make_cor20(flags=COR20_IL_ONLY, native_rva=0, native_size=64))
+    assert loader.read_clr(fake) == (True, True, True)
 
 
 def test_a_missing_clr_directory_reads_as_native() -> None:
