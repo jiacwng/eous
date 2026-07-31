@@ -28,8 +28,16 @@ def test_every_member_root_is_declared(v: vocab.Vocab) -> None:
     assert set(v.members.values()) <= v.roots
 
 
-def test_every_root_has_a_category(v: vocab.Vocab) -> None:
-    assert v.roots == set(v.root_to_category)
+# `roots` is built from `root_to_category`, so comparing the two proves nothing. The
+# postcondition worth asserting is that every root a member points at carries a category.
+def test_every_root_a_member_uses_has_a_category(v: vocab.Vocab) -> None:
+    uncategorised = set(v.members.values()) - set(v.root_to_category)
+    assert uncategorised == set()
+
+
+def test_every_declared_root_is_reachable_from_some_mnemonic(v: vocab.Vocab) -> None:
+    unreachable = v.roots - set(v.members.values())
+    assert unreachable == set()
 
 
 def test_categories_are_ten(v: vocab.Vocab) -> None:
@@ -69,7 +77,7 @@ def test_repeated_string_move_differs_from_scalar_move(v: vocab.Vocab) -> None:
     assert v.root_of("movsd") != v.root_of("rep movsd")
 
 
-@pytest.mark.parametrize("prefix", ["lock", "rep", "repe", "repz", "repne", "repnz", "bnd"])
+@pytest.mark.parametrize("prefix", sorted(vocab.PREFIXES))
 def test_known_prefixes_are_stripped(v: vocab.Vocab, prefix: str) -> None:
     assert v.root_of(f"{prefix} xadd") == v.root_of("xadd")
 
@@ -78,8 +86,23 @@ def test_unknown_prefix_stays_unknown(v: vocab.Vocab) -> None:
     assert v.root_of("wibble xadd") is None
 
 
-def test_prefix_is_stripped_once_only(v: vocab.Vocab) -> None:
-    assert v.root_of("rep rep xadd") is None
+# Capstone prints two prefixes on transactional forms, so stripping continues while the
+# leading token is a known prefix.
+def test_a_chain_of_prefixes_is_stripped(v: vocab.Vocab) -> None:
+    assert v.root_of("xacquire lock xor") == v.root_of("xor")
+    assert v.root_of("xrelease lock xor") == v.root_of("xor")
+
+
+def test_stripping_stops_at_the_first_unknown_token(v: vocab.Vocab) -> None:
+    assert v.root_of("lock wibble xadd") is None
+
+
+@pytest.mark.parametrize(
+    "mnemonic",
+    ["retfq", "notrack jmp", "notrack call", "xacquire lock xor", "xrelease lock xor"],
+)
+def test_forms_capstone_really_emits_all_resolve(v: vocab.Vocab, mnemonic: str) -> None:
+    assert v.root_of(mnemonic) is not None
 
 
 def test_bare_prefix_without_operand_is_unknown(v: vocab.Vocab) -> None:
@@ -182,6 +205,27 @@ def test_missing_data_file_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_malformed_json_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     install_data_file(monkeypatch, "{ this is not json")
     with pytest.raises(VocabError, match="malformed"):
+        vocab.load("x86")
+
+
+@pytest.mark.usefixtures("fresh_caches")
+def test_a_byte_corrupt_data_file_raises_a_vocab_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Source:
+        def joinpath(self, name: str) -> "Source":
+            return self
+
+        def read_text(self, encoding: str = "utf-8") -> str:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    class Resources:
+        @staticmethod
+        def files(package: str) -> Source:
+            return Source()
+
+    monkeypatch.setattr(vocab, "resources", Resources)
+    with pytest.raises(VocabError, match="unreadable"):
         vocab.load("x86")
 
 
