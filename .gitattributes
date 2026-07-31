@@ -1,2 +1,2 @@
 * text=auto eol=lf
-tests/fixtures/** binary
+tests/fixtures/bin/** binary
