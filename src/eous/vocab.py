@@ -15,9 +15,15 @@ from types import MappingProxyType
 
 DATA_FILE = "categories.json"
 
-# Prefixes the disassembler prints ahead of a mnemonic, separated by one space. Stripping
-# happens once, and only after an exact lookup has already failed.
-PREFIXES = frozenset({"lock", "rep", "repe", "repz", "repne", "repnz", "bnd"})
+# Prefixes the disassembler prints ahead of a mnemonic, separated by one space. Verified
+# against Capstone: `notrack` appears in CET builds, and `xacquire` and `xrelease` appear
+# on transactional forms such as `xacquire lock xor`.
+# fmt: off
+PREFIXES = frozenset({
+    "lock", "rep", "repe", "repz", "repne", "repnz", "bnd",
+    "notrack", "xacquire", "xrelease",
+})
+# fmt: on
 
 
 class VocabError(Exception):
@@ -36,11 +42,19 @@ class Vocab:
         if root is not None:
             return root
 
-        prefix, separator, remainder = mnemonic.partition(" ")
-        if separator and prefix in PREFIXES:
-            return self.members.get(remainder)
+        # Capstone prints more than one prefix on some forms, `xacquire lock xor` among
+        # them, so leading prefix tokens come off one at a time. Each token is matched
+        # exactly against PREFIXES, which keeps this a lookup rather than a scan.
+        remainder = mnemonic
+        while True:
+            prefix, separator, rest = remainder.partition(" ")
+            if not separator or prefix not in PREFIXES:
+                break
+            remainder = rest
 
-        return None
+        if remainder == mnemonic:
+            return None
+        return self.members.get(remainder)
 
 
 @cache
@@ -76,8 +90,12 @@ def read_data_file() -> dict[str, dict[str, dict[str, str]]]:
     source = resources.files("eous").joinpath("data").joinpath(DATA_FILE)
     try:
         text = source.read_text(encoding="utf-8")
-    except (FileNotFoundError, ModuleNotFoundError) as exc:
+    except FileNotFoundError as exc:
         raise VocabError(f"vocabulary data file {DATA_FILE} is missing") from exc
+    except (OSError, ValueError, ModuleNotFoundError) as exc:
+        # ValueError covers UnicodeDecodeError, so a byte-corrupt file reports as a
+        # vocabulary problem rather than escaping as a decoding one.
+        raise VocabError(f"vocabulary data file {DATA_FILE} is unreadable: {exc}") from exc
 
     try:
         payload = json.loads(text)
