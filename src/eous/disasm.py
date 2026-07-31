@@ -11,27 +11,15 @@ from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs
 
 from eous.loader import ENTROPY_THRESHOLD, Binary
 
-# Each region carries its own budget. A shared pool drained in parse order would tie the
-# digest to the order sections appear in the file. Measured cosine 0.997 to 1.000 against
-# a full sweep, at roughly half the time. Measured 2026-08-01 over 160 corpus binaries:
-# the median file decodes 5,825 instructions and 2 of 160 reach this ceiling.
+# Per region, since a shared pool drained in parse order would tie the digest to the
+# order sections appear in the file. Measured: 2 of 160 corpus binaries reach it.
 MAX_INSTRUCTIONS = 500_000
 
-# Resync budget for regions holding data. Policy: a region needing this many resyncs is
-# data, and the sweep abandons it there.
 MAX_STALLS = 20_000
-
-# Decode window, so a multi-megabyte region avoids quadratic behaviour.
 WINDOW_BYTES = 65_536
-
-# Filler runs of this length or more collapse to a single mnemonic. Policy: measured
-# 2026-08-01 over 160 corpus binaries, runs of 2 to 7 are ordinary code while every run
-# reaching 8 was alignment filler. M5 revisits whether set semantics make this redundant.
 PADDING_RUN = 8
 
-# Section addresses are attacker-controlled, and an address near 2**64 makes the decoder
-# wrap. Masking keeps the arithmetic inside 64 bits, and offsets advance by instruction
-# size, which holds a wrapped address moving forward through the region.
+# Section addresses are attacker-controlled, and one near 2**64 wraps the decoder.
 ADDRESS_MASK = (1 << 64) - 1
 
 # `add` belongs here because a run of zero bytes decodes as `add [eax], al`.
@@ -50,9 +38,8 @@ _CONDITIONS = (
     "ne", "ng", "nge", "nl", "nle", "no", "np", "ns", "nz", "o", "p", "pe", "po", "s", "z",
 )
 
-# Instructions after which execution continues somewhere else. `call` is included because
-# the callee runs in between, so the executed stream separates the call from the address
-# that follows it. Validated against Capstone's jump, call and ret groups in M4.3.
+# `call` belongs here because the callee runs in between, so the executed stream separates
+# a call from the address following it.
 TERMINATORS = frozenset(
     {
         "jmp", "ljmp", "call", "lcall",
@@ -111,8 +98,8 @@ def sweep(
             reports.append(RegionReport(section.name, 0, EMPTY, 0))
             continue
 
-        # Compressed and encrypted bytes decode into noise with a resync on almost every
-        # byte. Measured 30 seconds of garbage on one 3 MB section at entropy 7.96.
+        # Compressed bytes decode into noise: measured 30 seconds of garbage on one 3 MB
+        # section at entropy 7.96.
         if section.entropy >= entropy_threshold:
             reports.append(RegionReport(section.name, 0, ENTROPY, 0))
             continue
@@ -182,16 +169,15 @@ def _sweep_region(
             offset = next_offset
             advanced = True
 
-            # Capstone prints prefixes ahead of the mnemonic, so `repz ret` and
-            # `notrack jmp` reach the set through their final token.
+            # Capstone prints prefixes ahead of the mnemonic, so `repz ret` reaches the
+            # set through its final token.
             if mnemonic.rsplit(" ", 1)[-1] in TERMINATORS:
                 close_chunk()
             if decoded >= max_instructions:
                 break
 
-        # Capstone halts at the first undecodable byte, so a window yielding zero
-        # instructions means the byte at `offset` is junk: step over it and close
-        # the chunk there.
+        # Capstone halts at the first undecodable byte, so zero instructions means the
+        # byte at `offset` is junk.
         if not advanced:
             close_chunk()
             stalls += 1

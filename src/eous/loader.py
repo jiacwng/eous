@@ -15,26 +15,17 @@ from typing import Any, Protocol
 
 import lief
 
-# LIEF writes parse diagnostics straight to stderr, and their content follows whatever
-# file is being read. Silencing it keeps the tool's own output the only output.
 lief.logging.disable()
 
-# Measured 2026-08-01 over 630 corpus samples: the highest-entropy executable section of a
-# clean binary reaches 6.71, while UPX starts at 7.83, ASPack at 7.76 and Themida at 7.94.
-# A threshold of 7.2 sits inside that gap and separated the two groups completely. Known
-# limit: every packer measured compresses, so low-entropy packing schemes evade this gate
-# by design (Mantovani et al., NDSS 2020).
+# Measured over 630 corpus samples: clean binaries top out at 6.71 while UPX starts at
+# 7.83, ASPack at 7.76 and Themida at 7.94. Low-entropy packers evade this by design.
 ENTROPY_THRESHOLD = 7.2
 
-# Entropy is compared after rounding, which holds the swept-or-skipped decision steady
-# across platform maths libraries and keeps one file yielding one digest everywhere.
+# Rounding holds the swept-or-skipped decision steady across platform maths libraries.
 ENTROPY_DECIMALS = 6
 
 SUPPORTED_FORMATS = ("pe", "elf")
 SUPPORTED_ARCHES = ("x86", "x86-64")
-
-# One megabyte per read, so entropy of a large file works block by block. Implementation
-# detail: the value affects memory alone, and the result is identical at any block size.
 ENTROPY_BLOCK = 1 << 20
 
 PE_SECTION_EXECUTE = 0x20000000
@@ -154,14 +145,10 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
         header = b""
 
     if len(header) < COR20_MINIMUM:
-        # The directory exists, so the file is managed. The native-code question stays
-        # open here, and an open question reads as False.
         return (True, False, False)
 
-    # The first field states the header's own size, which ECMA-335 fixes at 72 bytes for
-    # every published runtime version. Requiring the exact value stops a crafted data
-    # directory 14 from pointing at ordinary code and handing us arbitrary flags, which
-    # would let a native binary claim to be pure bytecode and escape being swept.
+    # ECMA-335 fixes this field at 72. Demanding the exact value stops a forged data
+    # directory from pointing at ordinary code and handing us arbitrary flags.
     declared_size = struct.unpack_from("<I", header, 0)[0]
     if declared_size != COR20_MINIMUM:
         return (True, False, False)
@@ -170,8 +157,7 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
     _, native_size = struct.unpack_from("<II", header, COR20_NATIVE_OFFSET)
 
     il_only = bool(flags & COR20_IL_ONLY)
-    # A non-empty ManagedNativeHeader means precompiled native code, whatever the IL-only
-    # bit claims. Size alone decides, so the gate errs toward looking at the file.
+    # A non-empty ManagedNativeHeader means precompiled native code, whatever IL-only says.
     has_native = native_size != 0
     return (True, il_only, has_native)
 
@@ -194,8 +180,6 @@ def load(path: Path) -> Binary:
     if isinstance(parsed, lief.ELF.Binary):
         return _load_elf(path, parsed)
 
-    # lief.parse also returns Mach-O and COFF objects, and the module they come from
-    # names the family.
     family = type(parsed).__module__.rsplit(".", 1)[-1].lower()
     raise UnsupportedFormatError(f"{path} holds {family}, outside PE and ELF")
 
@@ -226,9 +210,8 @@ def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
         entry_point=parsed.optional_header.addressof_entrypoint,
         sections=sections,
         has_section_table=bool(sections),
-        # The count is of functions, so it carries one meaning in both formats. Counting
-        # PE libraries would put a clean binary at 7 where its function count is 35, and
-        # the packing indicator for few imports would then fire on it.
+        # Functions, so the count carries one meaning in both formats. Counting PE
+        # libraries would read 7 where the function count is 35.
         import_count=len(parsed.imported_functions),
         is_managed=is_managed,
         is_il_only=is_il_only,
@@ -242,8 +225,6 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
     if arch is None:
         raise UnsupportedArchError(f"{path} targets {machine}, outside x86 and x86-64")
 
-    # An ELF section reports one size, where a PE section separates its memory size from
-    # its size on disk.
     sections = tuple(
         _build_section(
             name=section.name,
@@ -257,9 +238,7 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
     )
     has_section_table = len(parsed.sections) > 0
 
-    # A stripped ELF keeps its loadable segments while losing the section table, and that
-    # is the ordinary shape for packed and hostile ELF. The executable segments stand in
-    # so such a file still presents its code.
+    # A stripped ELF keeps its loadable segments, which is the usual shape of packed ELF.
     if not any(section.executable for section in sections):
         sections = sections + _executable_segments(parsed)
 
@@ -297,7 +276,6 @@ def _executable_segments(parsed: lief.ELF.Binary) -> tuple[Section, ...]:
 
 
 def _text(value: str | bytes) -> str:
-    # LIEF declares a section name as either text or raw bytes.
     return value if isinstance(value, str) else value.decode("utf-8", "replace")
 
 

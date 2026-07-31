@@ -95,9 +95,7 @@ def test_the_64_bit_far_return_terminates() -> None:
     assert "retfq" in disasm.TERMINATORS
 
 
-# Capstone prints prefixes ahead of the mnemonic. `repz ret` is the GCC x86-64 epilogue,
-# so overlooking it would merge every pair of adjacent functions into one chunk and
-# produce shingles spanning a boundary the program treats as an exit.
+# `repz ret` is the GCC x86-64 epilogue, so overlooking it merges adjacent functions.
 PREFIXED_TERMINATORS = [
     (b"\xf3\xc3", "repz ret"),
     (b"\x48\xcb", "retfq"),
@@ -148,8 +146,6 @@ def test_one_below_the_threshold_survives() -> None:
     assert mnemonics(result) == ["nop"] * count + ["ret"]
 
 
-# A run of zero bytes decodes as `add [eax], al`, so `add` belongs in the padding set
-# even though it is an ordinary arithmetic instruction elsewhere.
 def test_a_run_of_zero_bytes_collapses_as_padding() -> None:
     result = disasm.sweep(binary(section(ZEROS * 20 + RET)))
     assert mnemonics(result) == ["add", "ret"]
@@ -217,8 +213,7 @@ def test_non_executable_sections_are_left_alone() -> None:
 # ---- budgets are per region -------------------------------------------------
 
 
-# A shared budget drained in parse order would make the digest depend on the order
-# sections happen to appear, which breaks determinism.
+# A shared budget would tie the digest to the order sections appear in.
 def test_the_budget_applies_to_each_region_separately() -> None:
     first = section(PUSH_EAX * 20, name=".a", virtual_address=0x1000)
     second = section(PUSH_EAX * 20, name=".b", virtual_address=0x2000)
@@ -294,9 +289,6 @@ def test_an_unknown_architecture_raises() -> None:
 # ---- adversarial addresses --------------------------------------------------
 
 
-# A section address near 2**64 makes the decoder's address arithmetic wrap. Offsets now
-# advance by instruction size, so a wrapped address keeps moving forward and leaves the
-# stall budget untouched.
 def test_a_section_addressed_near_the_top_of_memory_still_sweeps() -> None:
     data = (XOR_EAX + RET) * 40
     low = disasm.sweep(binary(section(data, virtual_address=0x1000), arch="x86-64"))
@@ -329,9 +321,6 @@ def test_every_fixture_sweeps(name: str) -> None:
     assert all(report.skipped is None for report in result.reports)
 
 
-# A packed or hostile ELF commonly ships with its section table stripped. The loader
-# falls back to the executable segments, and the sweep reads them the same way it reads
-# sections. This case crosses from L1 into L2, so it lives here.
 def make_stripped_elf(code: bytes) -> bytes:
     header = bytearray(64)
     header[0:4] = b"\x7fELF"
@@ -376,8 +365,7 @@ def test_a_fixture_sweeps_the_same_way_twice() -> None:
 
 
 def test_fixture_chunks_are_short() -> None:
-    # Measured 2026-08-01: these fixtures average 7 to 10 instructions per chunk, while
-    # 160 real corpus binaries average 4.61. That gap is T-1's subject.
+    # Measured: these fixtures average 7 to 10, real corpus binaries 4.61. T-1's subject.
     result = disasm.sweep(loader.load(FIXTURES / "fixture-pe-x64.exe"))
     mean = result.total_decoded / len(result.chunks)
     assert 1.0 < mean < 20.0

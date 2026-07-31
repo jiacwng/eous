@@ -15,8 +15,7 @@ from types import MappingProxyType
 
 DATA_FILE = "categories.json"
 
-# Prefixes the disassembler prints ahead of a mnemonic, separated by one space. Verified
-# against Capstone: `notrack` appears in CET builds, and `xacquire` and `xrelease` appear
+# Verified against Capstone: `notrack` appears in CET builds, `xacquire` and `xrelease`
 # on transactional forms such as `xacquire lock xor`.
 # fmt: off
 PREFIXES = frozenset({
@@ -42,9 +41,8 @@ class Vocab:
         if root is not None:
             return root
 
-        # Capstone prints more than one prefix on some forms, `xacquire lock xor` among
-        # them, so leading prefix tokens come off one at a time. Each token is matched
-        # exactly against PREFIXES, which keeps this an exact lookup at every step.
+        # Some forms carry two prefixes, so tokens come off one at a time. Each is matched
+        # exactly, which keeps this a lookup at every step.
         remainder = mnemonic
         while True:
             prefix, separator, rest = remainder.partition(" ")
@@ -93,8 +91,6 @@ def read_data_file() -> dict[str, dict[str, dict[str, str]]]:
     except FileNotFoundError as exc:
         raise VocabError(f"vocabulary data file {DATA_FILE} is missing") from exc
     except (OSError, ValueError, ModuleNotFoundError) as exc:
-        # ValueError covers UnicodeDecodeError, so a byte-corrupt file reports as a
-        # vocabulary problem with the rest.
         raise VocabError(f"vocabulary data file {DATA_FILE} is unreadable: {exc}") from exc
 
     try:
