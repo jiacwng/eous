@@ -277,14 +277,15 @@ def test_a_stripped_elf_still_presents_its_code(tmp_path: Path) -> None:
     assert b"".join(s.data for s in binary.executable_sections) == code
 
 
-def test_a_stripped_elf_sweeps_to_real_mnemonics(tmp_path: Path) -> None:
-    from eous import disasm
-
+def test_a_stripped_elf_reports_its_segment_as_executable(tmp_path: Path) -> None:
     target = tmp_path / "stripped.elf"
     target.write_bytes(make_stripped_elf((b"\x31\xc0" + b"\xc3") * 20))
-    result = disasm.sweep(loader.load(target))
-    assert result.total_decoded == 40
-    assert result.chunks[0] == ("xor", "ret")
+
+    regions = loader.load(target).executable_sections
+    assert len(regions) == 1
+    assert regions[0].executable
+    assert regions[0].writable is False
+    assert regions[0].virtual_address == 0x400078
 
 
 def test_a_binary_keeping_its_sections_ignores_the_segment_fallback() -> None:
