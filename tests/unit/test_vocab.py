@@ -28,8 +28,8 @@ def test_every_member_root_is_declared(v: vocab.Vocab) -> None:
     assert set(v.members.values()) <= v.roots
 
 
-# `roots` is built from `root_to_category`, so comparing the two proves nothing. The
-# postcondition worth asserting is that every root a member points at carries a category.
+# `roots` is built from `root_to_category`, so comparing the two restates a definition.
+# The postcondition worth asserting is that every root a member points at has a category.
 def test_every_root_a_member_uses_has_a_category(v: vocab.Vocab) -> None:
     uncategorised = set(v.members.values()) - set(v.root_to_category)
     assert uncategorised == set()
@@ -105,7 +105,7 @@ def test_forms_capstone_really_emits_all_resolve(v: vocab.Vocab, mnemonic: str) 
     assert v.root_of(mnemonic) is not None
 
 
-def test_bare_prefix_without_operand_is_unknown(v: vocab.Vocab) -> None:
+def test_a_prefix_standing_alone_is_unknown(v: vocab.Vocab) -> None:
     assert v.root_of("rep") is None
 
 
@@ -164,7 +164,7 @@ def test_vocab_is_frozen(v: vocab.Vocab) -> None:
 
 
 # Everything below drives the failure paths. The data file is a build artefact, so a
-# corrupted one has to be simulated rather than committed.
+# corrupted one is simulated here.
 
 
 @pytest.fixture
@@ -244,7 +244,7 @@ def test_entry_missing_its_tables_raises(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.usefixtures("fresh_caches")
-def test_root_without_a_category_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_root_missing_its_category_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = '{"x86": {"members": {"mov": "ghost"}, "root_to_category": {"real": "transfer"}}}'
     install_data_file(monkeypatch, payload)
     with pytest.raises(VocabError, match="ghost"):

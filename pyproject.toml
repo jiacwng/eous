@@ -13,7 +13,6 @@ requires-python = ">=3.11"
 dependencies = [
     "lief>=1.0,<1.1",
     "capstone>=5.0.1,<5.1",
-    "numpy>=1.24,<2",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +50,11 @@ select = ["E", "W", "F", "I", "UP", "B", "S"]
 [tool.mypy]
 files = ["src"]
 strict = true
+
+# capstone ships no py.typed marker, so its types are unavailable to the checker.
+[[tool.mypy.overrides]]
+module = "capstone.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

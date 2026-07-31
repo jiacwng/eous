@@ -44,7 +44,7 @@ class Vocab:
 
         # Capstone prints more than one prefix on some forms, `xacquire lock xor` among
         # them, so leading prefix tokens come off one at a time. Each token is matched
-        # exactly against PREFIXES, which keeps this a lookup rather than a scan.
+        # exactly against PREFIXES, which keeps this an exact lookup at every step.
         remainder = mnemonic
         while True:
             prefix, separator, rest = remainder.partition(" ")
@@ -94,7 +94,7 @@ def read_data_file() -> dict[str, dict[str, dict[str, str]]]:
         raise VocabError(f"vocabulary data file {DATA_FILE} is missing") from exc
     except (OSError, ValueError, ModuleNotFoundError) as exc:
         # ValueError covers UnicodeDecodeError, so a byte-corrupt file reports as a
-        # vocabulary problem rather than escaping as a decoding one.
+        # vocabulary problem with the rest.
         raise VocabError(f"vocabulary data file {DATA_FILE} is unreadable: {exc}") from exc
 
     try:
