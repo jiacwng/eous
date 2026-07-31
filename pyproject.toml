@@ -44,8 +44,8 @@ src = ["src", "tests"]
 select = ["E", "W", "F", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-# assert is the pytest idiom
-"tests/**" = ["S101"]
+# assert is the pytest idiom; random builds test data rather than secrets
+"tests/**" = ["S101", "S311"]
 
 [tool.mypy]
 files = ["src"]
