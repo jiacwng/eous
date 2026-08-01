@@ -1,3 +1,4 @@
+import os
 import struct
 from pathlib import Path
 
@@ -21,7 +22,6 @@ def section(
     data: bytes,
     name: str = ".text",
     virtual_address: int = 0x1000,
-    entropy: float = 5.0,
     executable: bool = True,
 ) -> loader.Section:
     return loader.Section(
@@ -31,7 +31,6 @@ def section(
         raw_size=len(data),
         executable=executable,
         writable=False,
-        entropy=entropy,
         data=data,
     )
 
@@ -170,16 +169,23 @@ def test_ordinary_instructions_survive_a_long_run() -> None:
 
 
 def test_a_high_entropy_region_is_skipped_by_name() -> None:
-    packed = section(XOR_EAX * 50, entropy=loader.ENTROPY_THRESHOLD + 0.1)
+    packed = section(os.urandom(8192))
+    assert packed.entropy > loader.ENTROPY_THRESHOLD
     result = disasm.sweep(binary(packed))
     assert result.chunks == ()
     assert result.reports[0].skipped == disasm.ENTROPY
 
 
 def test_a_region_exactly_at_the_threshold_is_skipped() -> None:
-    edge = section(XOR_EAX * 50, entropy=loader.ENTROPY_THRESHOLD)
-    result = disasm.sweep(binary(edge))
+    edge = section(XOR_EAX * 50)
+    result = disasm.sweep(binary(edge), entropy_threshold=edge.entropy)
     assert result.reports[0].skipped == disasm.ENTROPY
+
+
+def test_a_region_just_under_the_threshold_is_swept() -> None:
+    edge = section(XOR_EAX * 50 + RET)
+    result = disasm.sweep(binary(edge), entropy_threshold=edge.entropy + 0.000001)
+    assert result.reports[0].skipped is None
 
 
 def test_an_empty_region_is_skipped_by_name() -> None:
@@ -245,13 +251,13 @@ def test_every_region_gets_a_named_report() -> None:
 
 
 def test_all_regions_skipped_for_entropy_is_true_when_they_are() -> None:
-    packed = section(XOR_EAX * 20, entropy=7.9)
+    packed = section(os.urandom(8192))
     assert disasm.sweep(binary(packed)).all_regions_skipped_for_entropy
 
 
 def test_one_readable_region_clears_the_entropy_verdict() -> None:
-    packed = section(XOR_EAX * 20, name=".a", virtual_address=0x1000, entropy=7.9)
-    clean = section(XOR_EAX + RET, name=".b", virtual_address=0x2000, entropy=5.0)
+    packed = section(os.urandom(8192), name=".a", virtual_address=0x1000)
+    clean = section(XOR_EAX + RET, name=".b", virtual_address=0x2000)
     assert not disasm.sweep(binary(packed, clean)).all_regions_skipped_for_entropy
 
 

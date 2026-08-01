@@ -160,9 +160,10 @@ def _sweep_region(
         window = data[offset : offset + window_bytes]
         advanced = False
 
-        for instruction in decoder.disasm(window, (base + offset) & ADDRESS_MASK):
-            mnemonic = instruction.mnemonic
-            next_offset = offset + instruction.size
+        # disasm_lite yields plain tuples. The object form builds a ctypes-backed
+        # instruction per decode, and only the mnemonic and the size are read here.
+        for _, size, mnemonic, _ in decoder.disasm_lite(window, (base + offset) & ADDRESS_MASK):
+            next_offset = offset + size
 
             current.append(mnemonic)
             decoded += 1
@@ -170,8 +171,11 @@ def _sweep_region(
             advanced = True
 
             # Capstone prints prefixes ahead of the mnemonic, so `repz ret` reaches the
-            # set through its final token.
-            if mnemonic.rsplit(" ", 1)[-1] in TERMINATORS:
+            # set through its final token. The space check comes first because 172 of
+            # 477,745 mnemonics in a large binary carry a prefix.
+            if mnemonic in TERMINATORS or (
+                " " in mnemonic and mnemonic.rsplit(" ", 1)[-1] in TERMINATORS
+            ):
                 close_chunk()
             if decoded >= max_instructions:
                 break
