@@ -1,0 +1,79 @@
+{
+ "version": "EO1",
+ "ngram": 6,
+ "permutations": 256,
+ "slot_bits": 2,
+ "files": [
+  {
+   "name": "fixture-elf-x64",
+   "sha256": "36c222f7ef0f9b0e28e5ecb88f4e55f9549053d011c80196f45a45cfc5d3b61a",
+   "arch": "x86-64",
+   "decoded": 137,
+   "chunks": 14,
+   "digest": "EO1:x86-64:56:eb7d3fbc145c9297f617c3167c2745cf0d8831afb894782891208eb40d84bbd17aa8a6039e35a5daaf3e7ab5b9a7f7f3b0249126eb4182781d82d42443a2b717"
+  },
+  {
+   "name": "fixture-elf-x86",
+   "sha256": "5dfb0c244e850ee14c050cfbb4663bc79dc697e9c4a1f54f4eb24a991d1e6155",
+   "arch": "x86",
+   "decoded": 97,
+   "chunks": 14,
+   "digest": "EO1:x86:38:dfba33f025de1e4cd616a1d6bbe508020e0007377757b88e91fe8de69e04ffa62689981a0c06e46aa0bef5844d98fcf0512ef166864112f9270e0e2273e77693"
+  },
+  {
+   "name": "fixture-pe-x64.exe",
+   "sha256": "e0939ea16a2b2075e6785a93c4838a864c8134b72a992c0acd33de3c8f32927a",
+   "arch": "x86-64",
+   "decoded": 14079,
+   "chunks": 1816,
+   "digest": "EO1:x86-64:3136:5cfc520f897cc0cf9622f03b61b14c6278c0ce587edba27f95f183e8ab518865ea11763cbbccc87663e9db036d32e5d466631c7fad01fe8ce028ec0c99922e47"
+  },
+  {
+   "name": "fixture-pe-x86.exe",
+   "sha256": "c9a127f34186746f04ef079d7a378c744b8e521d7b45b03df0bff3bb41ec2a41",
+   "arch": "x86",
+   "decoded": 18469,
+   "chunks": 1690,
+   "digest": "EO1:x86:5252:6ded051fc45bc751f633f4dc124b02ef80be4902d67e4a1101e6c59cd080c9ffd096e26188476b76aab012afe0bc9f1263a3c93647fb5219521742f30d260a50"
+  }
+ ],
+ "synthetic": {
+  "arch": "x86-64",
+  "chunks": [
+   [
+    "push",
+    "mov",
+    "sub",
+    "mov",
+    "xor",
+    "call",
+    "add",
+    "pop",
+    "ret"
+   ],
+   [
+    "mov",
+    "test",
+    "je",
+    "lea",
+    "mov",
+    "call",
+    "mov",
+    "ret"
+   ],
+   [
+    "xor",
+    "inc",
+    "cmp",
+    "jne",
+    "mov",
+    "shl",
+    "or",
+    "and",
+    "not",
+    "ret"
+   ]
+  ],
+  "digest": "EO1:x86-64:12:0a2fdc8d8888bf1b415a11c6e6efb601f70b0b796634f05e03f5357e5e419760b3fafe1f7e0034e002079dd44fe3b3ce2e4864273f08d48407f564cacce3b772"
+ }
+}

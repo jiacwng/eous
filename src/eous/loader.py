@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import math
 import struct
-from collections import Counter
-from collections.abc import Sequence
+import warnings
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 import lief
+import numpy
 
 lief.logging.disable()
 
@@ -79,8 +80,17 @@ class Section:
     raw_size: int
     executable: bool
     writable: bool
-    entropy: float
     data: bytes
+
+    @property
+    def entropy(self) -> float:
+        # Computed on first read and kept. A binary carries far more data than code, and
+        # entropy is consulted for the executable regions alone.
+        cached = self.__dict__.get("_entropy")
+        if cached is None:
+            cached = data_entropy(self.data)
+            object.__setattr__(self, "_entropy", cached)
+        return float(cached)
 
 
 @dataclass(frozen=True)
@@ -118,20 +128,20 @@ def shannon(counts: Sequence[int]) -> float:
 def data_entropy(data: bytes) -> float:
     if not data:
         return 0.0
-    return round(shannon(list(Counter(data).values())), ENTROPY_DECIMALS)
+    counts = numpy.bincount(numpy.frombuffer(data, dtype=numpy.uint8), minlength=256)
+    return round(shannon(counts.tolist()), ENTROPY_DECIMALS)
 
 
 def file_entropy(path: Path) -> float:
-    counts = [0] * 256
+    counts = numpy.zeros(256, dtype=numpy.int64)
     try:
         with path.open("rb") as handle:
             while block := handle.read(ENTROPY_BLOCK):
-                for value, seen in Counter(block).items():
-                    counts[value] += seen
+                counts += numpy.bincount(numpy.frombuffer(block, dtype=numpy.uint8), minlength=256)
     except OSError as exc:
         raise LoaderError(f"cannot read {path}: {exc}") from exc
 
-    return round(shannon(counts), ENTROPY_DECIMALS)
+    return round(shannon(counts.tolist()), ENTROPY_DECIMALS)
 
 
 def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
@@ -164,8 +174,10 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
 
 def load(path: Path) -> Binary:
     path = Path(path)
+    if path.is_dir():
+        raise LoaderError(f"{path} is a directory")
     if not path.is_file():
-        raise LoaderError(f"cannot read {path}: it is absent or is a directory")
+        raise LoaderError(f"{path} is absent")
 
     try:
         parsed = lief.parse(str(path))
@@ -185,7 +197,7 @@ def load(path: Path) -> Binary:
 
 
 def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
-    machine = parsed.header.machine.name
+    machine = _machine_name(lambda: parsed.header.machine)
     arch = PE_ARCHES.get(machine)
     if arch is None:
         raise UnsupportedArchError(f"{path} targets {machine}, outside x86 and x86-64")
@@ -220,7 +232,7 @@ def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
 
 
 def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
-    machine = parsed.header.machine_type.name
+    machine = _machine_name(lambda: parsed.header.machine_type)
     arch = ELF_ARCHES.get(machine)
     if arch is None:
         raise UnsupportedArchError(f"{path} targets {machine}, outside x86 and x86-64")
@@ -279,6 +291,22 @@ def _text(value: str | bytes) -> str:
     return value if isinstance(value, str) else value.decode("utf-8", "replace")
 
 
+def _machine_name(read: Callable[[], object]) -> str:
+    # LIEF raises a Python warning when the machine field holds a value it fails to
+    # recognise, and returns a raw int. Both are handled here rather than reaching stderr.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        value = read()
+    return _name_of(value)
+
+
+def _name_of(value: object) -> str:
+    # LIEF hands back an enum for architectures it knows and a raw int for the rest, so a
+    # crafted machine field would otherwise reach `.name` on an integer and raise.
+    name = getattr(value, "name", None)
+    return name if isinstance(name, str) else str(value)
+
+
 def _build_section(
     name: str | bytes,
     virtual_address: int,
@@ -295,6 +323,5 @@ def _build_section(
         raw_size=len(data),
         executable=executable,
         writable=writable,
-        entropy=data_entropy(data),
         data=data,
     )

@@ -290,17 +290,45 @@ def test_identical_sketches_carry_zero_uncertainty() -> None:
 # ---- containment ------------------------------------------------------------
 
 
-def test_containment_is_reported_at_similar_sizes() -> None:
+def test_containment_is_reported_both_ways_at_similar_sizes() -> None:
     text = digest.digest((tuple(varied(400, seed=88)),), "x86-64")
     assert text is not None
-    assert digest.compare(text, text).containment is not None
+    scores = digest.compare(text, text)
+    assert scores.left_in_right == pytest.approx(100.0)
+    assert scores.right_in_left == pytest.approx(100.0)
 
 
-def test_containment_is_withheld_beyond_the_ratio() -> None:
+def test_containment_is_withheld_in_both_directions_beyond_the_ratio() -> None:
     small = digest.digest((tuple(varied(30, seed=99)),), "x86-64")
     large = digest.digest((tuple(varied(3000, seed=99)),), "x86-64")
     assert small is not None and large is not None
-    assert digest.compare(small, large).containment is None
+    scores = digest.compare(small, large)
+    assert scores.left_in_right is None
+    assert scores.right_in_left is None
+
+
+# The gap between the two directions is the useful part: it names the superset.
+def test_a_subset_shows_the_asymmetry() -> None:
+    tokens = varied(900, seed=41)
+    whole = digest.digest((tuple(tokens),), "x86-64")
+    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "x86-64")
+    assert whole is not None and part is not None
+
+    scores = digest.compare(part, whole)
+    assert scores.left_in_right is not None and scores.right_in_left is not None
+    assert scores.left_in_right > scores.right_in_left
+
+
+def test_the_directions_swap_with_the_arguments() -> None:
+    tokens = varied(900, seed=42)
+    whole = digest.digest((tuple(tokens),), "x86-64")
+    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "x86-64")
+    assert whole is not None and part is not None
+
+    forward = digest.compare(part, whole)
+    backward = digest.compare(whole, part)
+    assert forward.left_in_right == pytest.approx(backward.right_in_left)
+    assert forward.right_in_left == pytest.approx(backward.left_in_right)
 
 
 # ---- against the real fixtures ----------------------------------------------

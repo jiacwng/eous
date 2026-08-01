@@ -183,12 +183,12 @@ def test_compiled_code_entropy_stays_under_the_threshold() -> None:
 
 
 def test_missing_file_raises(tmp_path: Path) -> None:
-    with pytest.raises(LoaderError, match="read"):
+    with pytest.raises(LoaderError, match="absent"):
         loader.load(tmp_path / "absent.bin")
 
 
 def test_directory_raises(tmp_path: Path) -> None:
-    with pytest.raises(LoaderError):
+    with pytest.raises(LoaderError, match="is a directory"):
         loader.load(tmp_path)
 
 
@@ -231,6 +231,23 @@ def test_other_architectures_are_refused_by_name(tmp_path: Path, machine: int, l
     target = tmp_path / f"{label}.elf"
     target.write_bytes(make_elf_header(machine=machine))
     with pytest.raises(UnsupportedArchError):
+        loader.load(target)
+
+
+# Found by fuzzing: LIEF returns a raw int for machine values it fails to recognise, so
+# reading `.name` from one raised instead of refusing.
+@pytest.mark.parametrize("machine", [999, 4242, 65535, 250, 4660])
+def test_an_unrecognised_machine_refuses_by_arch(tmp_path: Path, machine: int) -> None:
+    target = tmp_path / f"m{machine}.elf"
+    target.write_bytes(make_elf_header(machine=machine))
+    with pytest.raises(UnsupportedArchError, match=str(machine)):
+        loader.load(target)
+
+
+def test_a_known_machine_still_reports_its_name(tmp_path: Path) -> None:
+    target = tmp_path / "aarch64.elf"
+    target.write_bytes(make_elf_header(machine=183))
+    with pytest.raises(UnsupportedArchError, match="AARCH64"):
         loader.load(target)
 
 
