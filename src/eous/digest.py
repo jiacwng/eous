@@ -8,7 +8,10 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from math import sqrt
+
+import numpy
 
 from eous.vocab import load as load_vocab
 
@@ -66,6 +69,73 @@ def _derive_permutations() -> tuple[tuple[int, int], ...]:
 
 COEFFICIENTS = _derive_permutations()
 
+# Each permutation computes (multiplier(a) * hash(from BLAKE2b) + offset(b)) % MODULUS, the
+# biggest Mersenne prime holding in 64 bits. That product reaches 122 bits while numpy holds
+# 64, and an overflow here wraps in silence and yields a wrong digest. So both numbers get cut
+# in half and multiplied, and this way we hold everything under 64 bits.
+BLOCK = 4096
+
+
+@dataclass(frozen=True, eq=False)
+class _Table:
+    upper: numpy.ndarray
+    lower: numpy.ndarray
+    offsets: numpy.ndarray
+    modulus: numpy.uint64
+    width: numpy.uint64
+    split: numpy.uint64
+    half: numpy.uint64
+    carry_shift: numpy.uint64
+    carry: numpy.uint64
+    two: numpy.uint64
+
+
+@lru_cache(maxsize=1)
+def _table(coefficients: tuple[tuple[int, int], ...], modulus: int) -> _Table:
+    width = modulus.bit_length()
+    split = (width + 1) // 2
+    multipliers = numpy.array([pair[0] for pair in coefficients], dtype=numpy.uint64).reshape(-1, 1)
+    return _Table(
+        upper=multipliers >> numpy.uint64(split),
+        lower=multipliers & numpy.uint64((1 << split) - 1),
+        offsets=numpy.array([pair[1] for pair in coefficients], dtype=numpy.uint64).reshape(-1, 1),
+        modulus=numpy.uint64(modulus),
+        width=numpy.uint64(width),
+        split=numpy.uint64(split),
+        half=numpy.uint64((1 << split) - 1),
+        carry_shift=numpy.uint64(width - split),
+        carry=numpy.uint64((1 << (width - split)) - 1),
+        two=numpy.uint64(2),
+    )
+
+
+def _fold(values: numpy.ndarray, table: _Table) -> numpy.ndarray:
+    folded = (values & table.modulus) + (values >> table.width)
+    return folded - table.modulus * (folded >= table.modulus)
+
+
+def _shift(values: numpy.ndarray, table: _Table) -> numpy.ndarray:
+    carried = ((values & table.carry) << table.split) + (values >> table.carry_shift)
+    return _fold(carried, table)
+
+
+def _minima(hashes: numpy.ndarray) -> numpy.ndarray:
+    table = _table(COEFFICIENTS, MODULUS)
+    smallest = numpy.full(len(COEFFICIENTS), MODULUS, dtype=numpy.uint64)
+    for start in range(0, hashes.size, BLOCK):
+        # A hash spans the full 64 bits, so it takes two folds to land under the modulus.
+        block = _fold(_fold(hashes[start : start + BLOCK], table), table)
+        upper, lower = block >> table.split, block & table.half
+        permuted = _fold(
+            _fold(table.two * (table.upper * upper), table)
+            + _shift(_fold(table.upper * lower + table.lower * upper, table), table)
+            + _fold(table.lower * lower, table)
+            + table.offsets,
+            table,
+        )
+        smallest = numpy.minimum(smallest, permuted.min(axis=1))
+    return smallest
+
 
 @dataclass(frozen=True)
 class Sketch:
@@ -107,15 +177,21 @@ def shingles(chunks: list[list[str]]) -> set[tuple[str, ...]]:
 
 
 def pack(grams: set[tuple[str, ...]]) -> int:
-    hashes = [
-        h64(SEPARATOR.join(token.encode("utf-8") for token in gram), SHINGLE_PERSON)
-        for gram in grams
-    ]
+    if not grams:
+        raise DigestError("a sketch describes one shingle or more")
+
+    hashes = numpy.fromiter(
+        (
+            h64(SEPARATOR.join(token.encode("utf-8") for token in gram), SHINGLE_PERSON)
+            for gram in grams
+        ),
+        dtype=numpy.uint64,
+        count=len(grams),
+    )
 
     accumulated = 0
-    for multiplier, offset in COEFFICIENTS:
-        smallest = min((multiplier * value + offset) % MODULUS for value in hashes)
-        accumulated = (accumulated << SLOT_BITS) | (smallest & MASK)
+    for smallest in _minima(hashes):
+        accumulated = (accumulated << SLOT_BITS) | (int(smallest) & MASK)
     return accumulated
 
 
