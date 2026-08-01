@@ -36,6 +36,29 @@ def sketch_of(text: str) -> digest.Sketch:
     return digest.parse(text)
 
 
+def grams_of(count: int) -> set[tuple[str, ...]]:
+    return {
+        tuple(f"t{index}p{position}" for position in range(digest.NGRAM)) for index in range(count)
+    }
+
+
+def reference_pack(grams: set[tuple[str, ...]]) -> int:
+    # The plain statement of the sketch, kept as the oracle the array path answers to.
+    hashes = [
+        digest.h64(
+            digest.SEPARATOR.join(token.encode("utf-8") for token in gram),
+            digest.SHINGLE_PERSON,
+        )
+        for gram in grams
+    ]
+
+    accumulated = 0
+    for multiplier, offset in digest.COEFFICIENTS:
+        smallest = min((multiplier * value + offset) % digest.MODULUS for value in hashes)
+        accumulated = (accumulated << digest.SLOT_BITS) | (smallest & digest.MASK)
+    return accumulated
+
+
 # ---- constants and derivation -----------------------------------------------
 
 
@@ -158,6 +181,26 @@ def test_packing_is_stable() -> None:
 def test_set_order_leaves_the_sketch_unchanged() -> None:
     grams = digest.shingles([[f"op{i}" for i in range(60)]])
     assert digest.pack(grams) == digest.pack(set(reversed(list(grams))))
+
+
+def test_the_array_path_matches_the_reference_on_a_small_set() -> None:
+    grams = digest.shingles([varied(60, 7)])
+    assert digest.pack(grams) == reference_pack(grams)
+
+
+def test_the_array_path_matches_the_reference_on_a_single_shingle() -> None:
+    grams = {("mov",) * digest.NGRAM}
+    assert digest.pack(grams) == reference_pack(grams)
+
+
+def test_the_array_path_matches_the_reference_across_a_block_boundary() -> None:
+    grams = grams_of(digest.BLOCK + 200)
+    assert digest.pack(grams) == reference_pack(grams)
+
+
+def test_an_empty_shingle_set_names_its_cause() -> None:
+    with pytest.raises(DigestError):
+        digest.pack(set())
 
 
 # ---- the digest string ------------------------------------------------------
@@ -343,6 +386,16 @@ def test_every_fixture_digests(name: str) -> None:
     text = digest.digest(disasm.sweep(binary).chunks, binary.arch)
     assert text is not None
     assert digest.parse(text).arch == binary.arch
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["fixture-pe-x64.exe", "fixture-pe-x86.exe", "fixture-elf-x64", "fixture-elf-x86"],
+)
+def test_the_array_path_matches_the_reference_on_every_fixture(name: str) -> None:
+    binary = loader.load(FIXTURES / name)
+    grams = digest.shingles(digest.normalise(disasm.sweep(binary).chunks, binary.arch))
+    assert digest.pack(grams) == reference_pack(grams)
 
 
 def test_a_fixture_digests_the_same_way_twice() -> None:
