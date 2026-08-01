@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from eous import cli
+from eous import cli, report
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 CLEAN = FIXTURES / "fixture-pe-x64.exe"
@@ -180,6 +180,103 @@ def test_help_states_the_supported_scope(output: pytest.CaptureFixture[str]) -> 
 def test_the_hash_command_has_its_own_help() -> None:
     text = cli.build_parser().format_help()
     assert "hash" in text
+
+
+# ---- compare ----------------------------------------------------------------
+
+ELF64 = FIXTURES / "fixture-elf-x64"
+
+
+def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["compare", str(CLEAN), str(CLEAN)]) == cli.OK
+    assert "100.0%" in output.readouterr().out
+
+
+def test_comparison_prints_the_band_and_its_range(output: pytest.CaptureFixture[str]) -> None:
+    cli.main(["compare", str(CLEAN), str(CLEAN)])
+    out = output.readouterr().out
+    assert "similarity:" in out
+    assert "±" in out
+    assert "to" in out
+    assert "containment:" in out
+
+
+def test_two_digest_strings_compare(output: pytest.CaptureFixture[str]) -> None:
+    first = report.analyse(CLEAN).digest
+    second = report.analyse(ELF64).digest
+    assert cli.main(["compare", first, second]) == cli.OK
+    assert "similarity:" in output.readouterr().out
+
+
+def test_a_file_compares_against_a_digest(output: pytest.CaptureFixture[str]) -> None:
+    text = report.analyse(ELF64).digest
+    assert cli.main(["compare", str(CLEAN), text]) == cli.OK
+
+
+# The filesystem answers first, so a mistyped path reports as absent rather than being
+# read as a malformed digest.
+def test_a_mistyped_path_reports_as_a_digest_problem(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["compare", "no/such/file.exe", str(CLEAN)]) == cli.USAGE
+    assert output.readouterr().err
+
+
+def test_a_refused_file_stops_the_comparison(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "thing.macho"
+    target.write_bytes(struct.pack("<I", 0xFEEDFACF) + bytes(4096))
+    assert cli.main(["compare", str(target), str(CLEAN)]) == cli.REFUSED
+    captured = output.readouterr()
+    assert "unsupported_format" in captured.err
+    assert captured.out == ""
+
+
+def test_differing_architectures_are_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
+    x64 = report.analyse(CLEAN).digest
+    x86 = report.analyse(FIXTURES / "fixture-pe-x86.exe").digest
+    assert cli.main(["compare", x64, x86]) == cli.USAGE
+    assert "architectures differ" in output.readouterr().err
+
+
+def test_a_malformed_digest_is_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["compare", "EO1:x86:notanumber:ab", str(CLEAN)]) == cli.USAGE
+
+
+def test_compare_needs_two_inputs(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["compare", str(CLEAN)]) == cli.USAGE
+    assert cli.main(["compare"]) == cli.USAGE
+
+
+def test_compare_json_carries_the_range(output: pytest.CaptureFixture[str]) -> None:
+    cli.main(["compare", "--json", str(CLEAN), str(CLEAN)])
+    payload = json.loads(output.readouterr().out)
+    assert payload["similarity"] == pytest.approx(100.0)
+    assert payload["low"] <= payload["similarity"] <= payload["high"]
+    assert payload["left_in_right"] == pytest.approx(100.0)
+    assert payload["right_in_left"] == pytest.approx(100.0)
+    assert payload["left"].endswith("fixture-pe-x64.exe")
+
+
+def test_withheld_containment_says_why(output: pytest.CaptureFixture[str]) -> None:
+    cli.main(["compare", str(CLEAN), str(ELF64)])
+    assert "n/a" in output.readouterr().out
+
+
+# Both directions print, each naming its own, so no convention has to be remembered.
+def test_containment_names_both_directions(output: pytest.CaptureFixture[str]) -> None:
+    cli.main(["compare", str(CLEAN), str(CLEAN)])
+    lines = [line for line in output.readouterr().out.splitlines() if "in" in line]
+    assert len(lines) == 2
+    assert all("fixture-pe-x64.exe" in line for line in lines)
+
+
+def test_digest_inputs_are_labelled_left_and_right(output: pytest.CaptureFixture[str]) -> None:
+    text = report.analyse(CLEAN).digest
+    cli.main(["compare", text, text])
+    lines = output.readouterr().out.splitlines()
+    directions = [" ".join(line.split()) for line in lines if " in " in line]
+    assert "containment: left in right 100.0%" in directions
+    assert "right in left 100.0%" in directions
 
 
 # ---- exit codes -------------------------------------------------------------

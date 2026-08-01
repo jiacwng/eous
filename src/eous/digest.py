@@ -87,7 +87,8 @@ class Sketch:
 class Scores:
     similarity: float
     uncertainty: float
-    containment: float | None
+    left_in_right: float | None
+    right_in_left: float | None
 
 
 def normalise(chunks: tuple[tuple[str, ...], ...], arch: str) -> list[list[str]]:
@@ -164,17 +165,20 @@ def compare(left: Sketch | str, right: Sketch | str) -> Scores:
     jaccard = max(0.0, (observed - FLOOR) / (1 - FLOOR))
     uncertainty = sqrt(observed * (1 - observed) / PERMUTATIONS) / (1 - FLOOR) * 100
 
+    left_in_right, right_in_left = _containment(jaccard, first.cardinality, second.cardinality)
     return Scores(
         similarity=jaccard * 100,
         uncertainty=uncertainty,
-        containment=_containment(jaccard, first.cardinality, second.cardinality),
+        left_in_right=left_in_right,
+        right_in_left=right_in_left,
     )
 
 
-def _containment(jaccard: float, left: int, right: int) -> float | None:
+def _containment(jaccard: float, left: int, right: int) -> tuple[float | None, float | None]:
+    # Both directions carry the same information as jaccard plus the two cardinalities.
     smaller, larger = sorted((left, right))
     if smaller == 0 or larger > smaller * MAX_CONTAINMENT_RATIO:
-        return None
+        return (None, None)
 
-    estimate = jaccard * (larger + smaller) / (smaller * (1 + jaccard))
-    return min(1.0, estimate) * 100
+    shared = jaccard * (left + right) / (1 + jaccard)
+    return (min(1.0, shared / left) * 100, min(1.0, shared / right) * 100)

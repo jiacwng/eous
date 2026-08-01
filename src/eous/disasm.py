@@ -171,8 +171,7 @@ def _sweep_region(
             advanced = True
 
             # Capstone prints prefixes ahead of the mnemonic, so `repz ret` reaches the
-            # set through its final token. The space check comes first because 172 of
-            # 477,745 mnemonics in a large binary carry a prefix.
+            # set through its final token. The space check comes first.
             if mnemonic in TERMINATORS or (
                 " " in mnemonic and mnemonic.rsplit(" ", 1)[-1] in TERMINATORS
             ):

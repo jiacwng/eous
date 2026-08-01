@@ -8,7 +8,7 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from eous import report
+from eous import digest, report
 
 OK = 0
 REFUSED = 1
@@ -40,7 +40,21 @@ exit codes:
 examples:
   eous hash program.exe
   eous hash --json bin/* > digests.json
-  eous hash --quiet suspicious.dll ; echo $?
+  eous compare old.exe new.exe
+  eous compare EO1:x86-64:56:eb7d... EO1:x86-64:3136:5cfc...
+
+reading a comparison:
+  similarity:  27.6% ± 8.0 (19.6% to 35.6%)
+  containment: old.exe in new.exe   94.1%
+               new.exe in old.exe   41.2%
+
+  The band is sampling error, since 256 slots estimate the overlap rather than
+  measure it. It narrows as scores approach 100%. Two results whose bands
+  overlap stay unranked against each other.
+
+  Containment runs both ways, and the gap between them says which side is the
+  superset. Above a 4x size difference both are withheld, since the estimate
+  stops being reliable there.
 
 a refusal names its cause:
   eous: packed.exe: unsupported_format: macho
@@ -68,6 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
     hash_command.add_argument("--json", action="store_true", help="machine-readable output")
     hash_command.add_argument("--quiet", action="store_true", help="hold back refusal text")
 
+    compare_command = commands.add_parser(
+        "compare",
+        help="score two files or two digests against each other",
+        description="Score two inputs. Each may be a file or a digest string.",
+    )
+    compare_command.add_argument("left", nargs="?", metavar="FILE-OR-DIGEST")
+    compare_command.add_argument("right", nargs="?", metavar="FILE-OR-DIGEST")
+    compare_command.add_argument("--json", action="store_true", help="machine-readable output")
+
     return parser
 
 
@@ -83,15 +106,21 @@ def main(argv: list[str] | None = None) -> int:
         print(_installed_version())
         return OK
 
-    if args.command != "hash" or not args.paths:
-        parser.print_usage(sys.stderr)
-        return USAGE
-
     try:
-        results = [report.analyse(path) for path in args.paths]
+        if args.command == "hash" and args.paths:
+            return _run_hash(args)
+        if args.command == "compare" and args.left and args.right:
+            return _run_compare(args)
     except Exception as exc:
         print(f"eous: internal error: {exc}", file=sys.stderr)
         return INTERNAL
+
+    parser.print_usage(sys.stderr)
+    return USAGE
+
+
+def _run_hash(args: argparse.Namespace) -> int:
+    results = [report.analyse(path) for path in args.paths]
 
     if args.json:
         print(json.dumps([_as_record(r) for r in results], indent=1))
@@ -99,6 +128,74 @@ def main(argv: list[str] | None = None) -> int:
         _print_lines(results, labelled=len(results) > 1, quiet=args.quiet)
 
     return REFUSED if any(r.refusal for r in results) else OK
+
+
+def _run_compare(args: argparse.Namespace) -> int:
+    resolved: list[str] = []
+    labels: list[str] = []
+    for text, side in ((args.left, "left"), (args.right, "right")):
+        # A path that exists is a file; anything else is read as a digest string. The
+        # filesystem answers first, so a mistyped path reports as absent.
+        path = Path(text)
+        if not path.is_file():
+            resolved.append(text)
+            labels.append(side)
+            continue
+
+        result = report.analyse(path)
+        if result.digest is None:
+            cause = result.refusal
+            reason = f"{cause.gate}: {cause.detail}" if cause else "no digest"
+            print(f"eous: {path.name}: {reason}", file=sys.stderr)
+            return REFUSED
+        resolved.append(result.digest)
+        labels.append(path.name)
+
+    try:
+        scores = digest.compare(resolved[0], resolved[1])
+    except digest.DigestError as exc:
+        print(f"eous: {exc}", file=sys.stderr)
+        return USAGE
+
+    if args.json:
+        print(json.dumps(_as_scores(scores, labels), indent=1))
+    else:
+        _print_scores(scores, labels)
+    return OK
+
+
+def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
+    low = max(0.0, scores.similarity - scores.uncertainty)
+    high = min(100.0, scores.similarity + scores.uncertainty)
+    print(
+        f"similarity:  {scores.similarity:.1f}% ± {scores.uncertainty:.1f} "
+        f"({low:.1f}% to {high:.1f}%)"
+    )
+
+    if scores.left_in_right is None or scores.right_in_left is None:
+        print("containment: n/a (the two differ in size by more than 4x)")
+        return
+
+    left, right = labels
+    width = max(len(left), len(right))
+    print(f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%")
+    print(f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%")
+
+
+def _as_scores(scores: digest.Scores, labels: list[str]) -> dict[str, object]:
+    def rounded(value: float | None) -> float | None:
+        return None if value is None else round(value, 4)
+
+    return {
+        "left": labels[0],
+        "right": labels[1],
+        "similarity": round(scores.similarity, 4),
+        "uncertainty": round(scores.uncertainty, 4),
+        "low": round(max(0.0, scores.similarity - scores.uncertainty), 4),
+        "high": round(min(100.0, scores.similarity + scores.uncertainty), 4),
+        "left_in_right": rounded(scores.left_in_right),
+        "right_in_left": rounded(scores.right_in_left),
+    }
 
 
 def _print_lines(results: list[report.Analysis], labelled: bool, quiet: bool) -> None:
