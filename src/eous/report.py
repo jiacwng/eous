@@ -37,9 +37,9 @@ def analyse(path: Path) -> Analysis:
     try:
         binary = loader.load(path)
     except loader.UnsupportedFormatError as exc:
-        return _refuse(path, UNSUPPORTED_FORMAT, _detail(exc, "holds"))
+        return _refuse(path, UNSUPPORTED_FORMAT, str(exc))
     except loader.UnsupportedArchError as exc:
-        return _refuse(path, UNSUPPORTED_ARCH, _detail(exc, "targets"))
+        return _refuse(path, UNSUPPORTED_ARCH, str(exc))
     except loader.LoaderError as exc:
         return _refuse(path, UNREADABLE, str(exc))
 
@@ -66,11 +66,3 @@ def _refuse(
         binary=binary,
         sweep=sweep,
     )
-
-
-def _detail(error: Exception, marker: str) -> str:
-    # The loader phrases these as "<path> holds macho, outside PE and ELF". The cause is
-    # the part after the marker, so the refusal names what the file is.
-    text = str(error)
-    _, _, tail = text.partition(f" {marker} ")
-    return (tail.split(",")[0] or text).strip()

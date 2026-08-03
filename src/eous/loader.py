@@ -139,7 +139,7 @@ def file_entropy(path: Path) -> float:
             while block := handle.read(ENTROPY_BLOCK):
                 counts += numpy.bincount(numpy.frombuffer(block, dtype=numpy.uint8), minlength=256)
     except OSError as exc:
-        raise LoaderError(f"cannot read {path}: {exc}") from exc
+        raise LoaderError(f"cannot read: {exc}") from exc
 
     return round(shannon(counts.tolist()), ENTROPY_DECIMALS)
 
@@ -175,17 +175,17 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
 def load(path: Path) -> Binary:
     path = Path(path)
     if path.is_dir():
-        raise LoaderError(f"{path} is a directory")
+        raise LoaderError("path is a directory")
     if not path.is_file():
-        raise LoaderError(f"{path} is absent")
+        raise LoaderError("file is absent")
 
     try:
         parsed = lief.parse(str(path))
     except Exception as exc:
-        raise LoaderError(f"cannot parse {path}: {exc}") from exc
+        raise LoaderError(f"cannot parse: {exc}") from exc
 
     if parsed is None:
-        raise LoaderError(f"cannot parse {path}: no recognised container")
+        raise LoaderError("no recognised container")
 
     if isinstance(parsed, lief.PE.Binary):
         return _load_pe(path, parsed)
@@ -193,14 +193,14 @@ def load(path: Path) -> Binary:
         return _load_elf(path, parsed)
 
     family = type(parsed).__module__.rsplit(".", 1)[-1].lower()
-    raise UnsupportedFormatError(f"{path} holds {family}, outside PE and ELF")
+    raise UnsupportedFormatError(family)
 
 
 def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
     machine = _machine_name(lambda: parsed.header.machine)
     arch = PE_ARCHES.get(machine)
     if arch is None:
-        raise UnsupportedArchError(f"{path} targets {machine}, outside x86 and x86-64")
+        raise UnsupportedArchError(machine)
 
     sections = tuple(
         _build_section(
@@ -235,7 +235,7 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
     machine = _machine_name(lambda: parsed.header.machine_type)
     arch = ELF_ARCHES.get(machine)
     if arch is None:
-        raise UnsupportedArchError(f"{path} targets {machine}, outside x86 and x86-64")
+        raise UnsupportedArchError(machine)
 
     sections = tuple(
         _build_section(

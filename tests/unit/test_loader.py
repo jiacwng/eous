@@ -195,7 +195,7 @@ def test_directory_raises(tmp_path: Path) -> None:
 def test_unparseable_bytes_raise(tmp_path: Path) -> None:
     junk = tmp_path / "junk.bin"
     junk.write_bytes(b"this is text, never an executable" * 10)
-    with pytest.raises(LoaderError, match="parse"):
+    with pytest.raises(LoaderError, match="no recognised container"):
         loader.load(junk)
 
 

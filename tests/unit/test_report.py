@@ -82,6 +82,28 @@ def test_a_refusal_detail_names_a_cause() -> None:
     assert refusal.detail == "aarch64"
 
 
+@pytest.mark.parametrize(
+    ("name", "payload"),
+    [
+        ("absent.bin", None),
+        ("junk.bin", b"plain text, forever" * 20),
+        ("thing.macho", struct.pack("<I", 0xFEEDFACF) + bytes(4096)),
+        ("arm64.elf", elf_header(183)),
+    ],
+    ids=["absent", "junk", "macho", "arm64"],
+)
+def test_a_refusal_detail_holds_the_cause_alone(
+    tmp_path: Path, name: str, payload: bytes | None
+) -> None:
+    target = tmp_path / name
+    if payload is not None:
+        target.write_bytes(payload)
+    detail = report.analyse(target).refusal.detail
+    assert detail
+    assert str(tmp_path) not in detail
+    assert name not in detail
+
+
 def test_the_gate_names_are_declared_in_order() -> None:
     assert report.GATES[:3] == (
         report.UNREADABLE,
