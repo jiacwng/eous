@@ -12,7 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from eous import digest, disasm, loader
+from eous import digest, disasm, loader, toolchain
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures" / "bin"
@@ -49,6 +49,7 @@ def build() -> dict[str, object]:
         "ngram": digest.NGRAM,
         "permutations": digest.PERMUTATIONS,
         "slot_bits": digest.SLOT_BITS,
+        "engines": toolchain.engines(),
         "files": files,
         "synthetic": {
             "arch": SYNTHETIC_ARCH,
@@ -59,5 +60,5 @@ def build() -> dict[str, object]:
 
 
 if __name__ == "__main__":
-    VECTORS.write_text(json.dumps(build(), indent=1) + "\n", encoding="utf-8")
+    VECTORS.write_text(json.dumps(build(), indent=1) + "\n", encoding="utf-8", newline="\n")
     print(f"wrote {VECTORS}")

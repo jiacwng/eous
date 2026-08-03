@@ -3,6 +3,10 @@
  "ngram": 6,
  "permutations": 256,
  "slot_bits": 2,
+ "engines": {
+  "capstone": "5.0.7",
+  "lief": "1.0.0"
+ },
  "files": [
   {
    "name": "fixture-elf-x64",

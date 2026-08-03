@@ -8,7 +8,7 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from eous import digest, report
+from eous import digest, report, toolchain
 
 OK = 0
 REFUSED = 1
@@ -103,7 +103,9 @@ def main(argv: list[str] | None = None) -> int:
         return OK if exc.code == 0 else USAGE
 
     if args.version:
-        print(_installed_version())
+        print(f"eous {_installed_version()}")
+        for name, value in toolchain.engines().items():
+            print(f"{name} {value}")
         return OK
 
     try:
@@ -123,7 +125,7 @@ def _run_hash(args: argparse.Namespace) -> int:
     results = [report.analyse(path) for path in args.paths]
 
     if args.json:
-        print(json.dumps([_as_record(r) for r in results], indent=1))
+        print(json.dumps({"meta": _meta(), "results": [_as_record(r) for r in results]}, indent=1))
     else:
         _print_lines(results, labelled=len(results) > 1, quiet=args.quiet)
 
@@ -158,7 +160,7 @@ def _run_compare(args: argparse.Namespace) -> int:
         return USAGE
 
     if args.json:
-        print(json.dumps(_as_scores(scores, labels), indent=1))
+        print(json.dumps({"meta": _meta(), "comparison": _as_scores(scores, labels)}, indent=1))
     else:
         _print_scores(scores, labels)
     return OK
@@ -216,6 +218,10 @@ def _as_record(result: report.Analysis) -> dict[str, object]:
         "gate": result.refusal.gate if result.refusal else None,
         "detail": result.refusal.detail if result.refusal else None,
     }
+
+
+def _meta() -> dict[str, str]:
+    return {"eous": _installed_version(), **toolchain.engines()}
 
 
 def _installed_version() -> str:

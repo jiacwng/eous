@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from eous import digest, disasm, loader
+from eous import digest, disasm, loader, toolchain
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures" / "bin"
@@ -46,6 +46,11 @@ def test_the_synthetic_case_reproduces() -> None:
     case = VECTORS["synthetic"]
     chunks = tuple(tuple(chunk) for chunk in case["chunks"])
     assert digest.digest(chunks, case["arch"]) == case["digest"]
+
+
+# A digest is only reproducible under the decoder that produced it.
+def test_the_recorded_engines_are_the_installed_ones() -> None:
+    assert toolchain.engines() == VECTORS["engines"]
 
 
 def test_the_recorded_parameters_match_the_code() -> None:
