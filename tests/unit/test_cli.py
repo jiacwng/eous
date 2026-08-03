@@ -96,8 +96,8 @@ def test_quiet_holds_back_the_refusal_text(
 def test_json_output_parses(output: pytest.CaptureFixture[str]) -> None:
     cli.main(["hash", "--json", str(CLEAN)])
     payload = json.loads(output.readouterr().out)
-    assert payload[0]["digest"].startswith("EO1:")
-    assert payload[0]["path"].endswith("fixture-pe-x64.exe")
+    assert payload["results"][0]["digest"].startswith("EO1:")
+    assert payload["results"][0]["path"].endswith("fixture-pe-x64.exe")
 
 
 def test_json_carries_the_refusal(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
@@ -105,8 +105,8 @@ def test_json_carries_the_refusal(tmp_path: Path, output: pytest.CaptureFixture[
     target.write_bytes(b"text" * 50)
     cli.main(["hash", "--json", str(target)])
     payload = json.loads(output.readouterr().out)
-    assert payload[0]["digest"] is None
-    assert payload[0]["gate"] == "unreadable"
+    assert payload["results"][0]["digest"] is None
+    assert payload["results"][0]["gate"] == "unreadable"
 
 
 def test_json_stays_on_stdout_alone(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
@@ -267,11 +267,12 @@ def test_compare_needs_two_inputs(output: pytest.CaptureFixture[str]) -> None:
 def test_compare_json_carries_the_range(output: pytest.CaptureFixture[str]) -> None:
     cli.main(["compare", "--json", str(CLEAN), str(CLEAN)])
     payload = json.loads(output.readouterr().out)
-    assert payload["similarity"] == pytest.approx(100.0)
-    assert payload["low"] <= payload["similarity"] <= payload["high"]
-    assert payload["left_in_right"] == pytest.approx(100.0)
-    assert payload["right_in_left"] == pytest.approx(100.0)
-    assert payload["left"].endswith("fixture-pe-x64.exe")
+    scores = payload["comparison"]
+    assert scores["similarity"] == pytest.approx(100.0)
+    assert scores["low"] <= scores["similarity"] <= scores["high"]
+    assert scores["left_in_right"] == pytest.approx(100.0)
+    assert scores["right_in_left"] == pytest.approx(100.0)
+    assert scores["left"].endswith("fixture-pe-x64.exe")
 
 
 def test_withheld_containment_says_why(output: pytest.CaptureFixture[str]) -> None:
@@ -312,9 +313,10 @@ def test_json_labels_distinguish_files_sharing_a_basename(
 
     cli.main(["compare", "--json", str(left), str(right)])
     payload = json.loads(output.readouterr().out)
-    assert payload["left"] == str(left)
-    assert payload["right"] == str(right)
-    assert payload["left"] != payload["right"]
+    scores = payload["comparison"]
+    assert scores["left"] == str(left)
+    assert scores["right"] == str(right)
+    assert scores["left"] != scores["right"]
 
 
 def test_digest_inputs_are_labelled_left_and_right(output: pytest.CaptureFixture[str]) -> None:
