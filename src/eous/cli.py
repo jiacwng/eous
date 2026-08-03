@@ -44,7 +44,7 @@ examples:
   eous compare EO1:x86-64:56:eb7d... EO1:x86-64:3136:5cfc...
 
 reading a comparison:
-  similarity:  27.6% ± 8.0 (19.6% to 35.6%)
+  similarity:  27.6% +/- 8.0 (19.6% to 35.6%)
   containment: old.exe in new.exe   94.1%
                new.exe in old.exe   41.2%
 
@@ -167,8 +167,9 @@ def _run_compare(args: argparse.Namespace) -> int:
 def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
     low = max(0.0, scores.similarity - scores.uncertainty)
     high = min(100.0, scores.similarity + scores.uncertainty)
+    # ASCII only: stdout takes the environment's encoding.
     print(
-        f"similarity:  {scores.similarity:.1f}% ± {scores.uncertainty:.1f} "
+        f"similarity:  {scores.similarity:.1f}% +/- {scores.uncertainty:.1f} "
         f"({low:.1f}% to {high:.1f}%)"
     )
 

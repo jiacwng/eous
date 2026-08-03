@@ -196,9 +196,26 @@ def test_comparison_prints_the_band_and_its_range(output: pytest.CaptureFixture[
     cli.main(["compare", str(CLEAN), str(CLEAN)])
     out = output.readouterr().out
     assert "similarity:" in out
-    assert "±" in out
+    assert "+/-" in out
     assert "to" in out
     assert "containment:" in out
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["compare", str(CLEAN), str(CLEAN)],
+        ["compare", str(CLEAN), str(ELF64)],
+        ["hash", str(CLEAN)],
+        ["--help"],
+        ["compare", "--help"],
+    ],
+    ids=["compare_same", "compare_withheld", "hash", "help", "compare_help"],
+)
+def test_every_line_of_output_is_ascii(args: list[str], output: pytest.CaptureFixture[str]) -> None:
+    cli.main(args)
+    captured = output.readouterr()
+    assert (captured.out + captured.err).isascii()
 
 
 def test_two_digest_strings_compare(output: pytest.CaptureFixture[str]) -> None:
