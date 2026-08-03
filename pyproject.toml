@@ -9,6 +9,7 @@ description = "Code-similarity digests for native PE and ELF binaries (x86/x86-6
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "Jiacheng Wang" }]
 
 dependencies = [
     "lief>=1.0,<1.1",
@@ -18,6 +19,10 @@ dependencies = [
     # against 0.676s counting in Python, a 19x gain on a hot path.
     "numpy>=1.24,<3",
 ]
+
+[project.urls]
+Repository = "https://github.com/jiacwng/eous"
+Issues = "https://github.com/jiacwng/eous/issues"
 
 [project.scripts]
 eous = "eous.cli:main"
