@@ -287,6 +287,36 @@ def test_containment_names_both_directions(output: pytest.CaptureFixture[str]) -
     assert all("fixture-pe-x64.exe" in line for line in lines)
 
 
+def test_files_sharing_a_basename_stay_distinguishable(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    left, right = tmp_path / "v1" / "prog.exe", tmp_path / "v2" / "prog.exe"
+    for target in (left, right):
+        target.parent.mkdir()
+        target.write_bytes(CLEAN.read_bytes())
+
+    cli.main(["compare", str(left), str(right)])
+    lines = [line for line in output.readouterr().out.splitlines() if " in " in line]
+    assert len(lines) == 2
+    assert str(left) in lines[0]
+    assert str(right) in lines[0]
+
+
+def test_json_labels_distinguish_files_sharing_a_basename(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    left, right = tmp_path / "v1" / "prog.exe", tmp_path / "v2" / "prog.exe"
+    for target in (left, right):
+        target.parent.mkdir()
+        target.write_bytes(CLEAN.read_bytes())
+
+    cli.main(["compare", "--json", str(left), str(right)])
+    payload = json.loads(output.readouterr().out)
+    assert payload["left"] == str(left)
+    assert payload["right"] == str(right)
+    assert payload["left"] != payload["right"]
+
+
 def test_digest_inputs_are_labelled_left_and_right(output: pytest.CaptureFixture[str]) -> None:
     text = report.analyse(CLEAN).digest
     cli.main(["compare", text, text])

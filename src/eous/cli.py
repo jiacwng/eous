@@ -149,7 +149,7 @@ def _run_compare(args: argparse.Namespace) -> int:
             print(f"eous: {path.name}: {reason}", file=sys.stderr)
             return REFUSED
         resolved.append(result.digest)
-        labels.append(path.name)
+        labels.append(text)
 
     try:
         scores = digest.compare(resolved[0], resolved[1])
