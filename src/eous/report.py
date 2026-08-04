@@ -12,8 +12,12 @@ from eous.digest import digest as build_digest
 UNREADABLE = "unreadable"
 UNSUPPORTED_FORMAT = "unsupported_format"
 UNSUPPORTED_ARCH = "unsupported_arch"
+PACKED = "packed"
 
-GATES = (UNREADABLE, UNSUPPORTED_FORMAT, UNSUPPORTED_ARCH)
+# A binary keeping a tenth of its code readable still has code worth digesting.
+PACKED_SHARE = 0.9
+
+GATES = (UNREADABLE, UNSUPPORTED_FORMAT, UNSUPPORTED_ARCH, PACKED)
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,10 @@ def analyse(path: Path) -> Analysis:
         return _refuse(path, UNREADABLE, str(exc))
 
     sweep = disasm.sweep(binary)
+    if sweep.compressed_share >= PACKED_SHARE:
+        share = f"{sweep.compressed_share:.0%} of executable code is compressed"
+        return _refuse(path, PACKED, share, binary, sweep)
+
     text = build_digest(sweep.chunks, binary.arch)
 
     if text is None:

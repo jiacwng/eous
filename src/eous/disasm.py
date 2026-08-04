@@ -63,6 +63,7 @@ class RegionReport:
     decoded: int
     skipped: str | None
     stalls: int
+    size: int
 
 
 @dataclass(frozen=True)
@@ -72,8 +73,13 @@ class SweepResult:
     total_decoded: int
 
     @property
-    def all_regions_skipped_for_entropy(self) -> bool:
-        return bool(self.reports) and all(r.skipped == ENTROPY for r in self.reports)
+    def compressed_share(self) -> float:
+        # Weighed by bytes, since a section holds at most log2(size) bits of entropy and a
+        # small one can never reach the threshold however random it is.
+        total = sum(r.size for r in self.reports)
+        if not total:
+            return 0.0
+        return sum(r.size for r in self.reports if r.skipped == ENTROPY) / total
 
 
 def sweep(
@@ -94,11 +100,11 @@ def sweep(
 
     for section in binary.executable_sections:
         if not section.data:
-            reports.append(RegionReport(section.name, 0, EMPTY, 0))
+            reports.append(RegionReport(section.name, 0, EMPTY, 0, len(section.data)))
             continue
 
         if section.entropy >= entropy_threshold:
-            reports.append(RegionReport(section.name, 0, ENTROPY, 0))
+            reports.append(RegionReport(section.name, 0, ENTROPY, 0, len(section.data)))
             continue
 
         region_chunks, report = _sweep_region(
@@ -184,7 +190,9 @@ def _sweep_region(
             offset += 1
 
     close_chunk()
-    return chunks, RegionReport(name=name, decoded=decoded, skipped=skipped, stalls=stalls)
+    return chunks, RegionReport(
+        name=name, decoded=decoded, skipped=skipped, stalls=stalls, size=len(data)
+    )
 
 
 def _collapse_padding(mnemonics: list[str], padding_run: int) -> list[str]:

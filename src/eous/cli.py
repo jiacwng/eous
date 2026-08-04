@@ -57,7 +57,10 @@ reading a comparison:
   stops being reliable there.
 
 a refusal names its cause:
-  eous: packed.exe: unsupported_format: macho
+  eous: sample.macho: unsupported_format: macho
+  eous: sample.elf:   unsupported_arch: AARCH64
+  eous: packed.exe:   packed: 100% of executable code is compressed
+  eous: notes.txt:    unreadable: no recognised container
 
 files eous declines to digest are reported rather than guessed at. A digest is
 withheld whenever the code inside stays unreadable."""

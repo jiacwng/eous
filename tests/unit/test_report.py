@@ -1,9 +1,11 @@
+import random
 import struct
 from pathlib import Path
 
+import lief
 import pytest
 
-from eous import report
+from eous import loader, report
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 
@@ -80,6 +82,70 @@ def test_a_refusal_detail_names_a_cause() -> None:
     refusal = report.Refusal(report.UNSUPPORTED_ARCH, "aarch64")
     assert refusal.gate in report.GATES
     assert refusal.detail == "aarch64"
+
+
+def compressed_copy(
+    source: Path, target: Path, *, seed: int = 0, regions: int | None = None
+) -> Path:
+    # Real container, executable bytes replaced by noise, which is the shape of a packed file.
+    parsed = lief.parse(str(source))
+    raw = bytearray(source.read_bytes())
+    rng = random.Random(seed)
+    filled = 0
+    for section in parsed.sections:
+        executable = (
+            section.characteristics & loader.PE_SECTION_EXECUTE
+            if isinstance(parsed, lief.PE.Binary)
+            else section.flags & loader.ELF_SECTION_EXECUTE
+        )
+        if not executable or not section.size:
+            continue
+        if regions is not None and filled >= regions:
+            continue
+        start, size = section.offset, section.size
+        raw[start : start + size] = bytes(rng.randrange(256) for _ in range(size))
+        filled += 1
+    target.write_bytes(bytes(raw))
+    return target
+
+
+@pytest.mark.parametrize("name", ["fixture-pe-x64.exe", "fixture-pe-x86.exe"])
+def test_a_compressed_binary_refuses_as_packed(tmp_path: Path, name: str) -> None:
+    target = compressed_copy(FIXTURES / name, tmp_path / name)
+    result = report.analyse(target)
+    assert result.digest is None
+    assert result.refusal is not None
+    assert result.refusal.gate == report.PACKED
+    assert result.refusal.detail.endswith("of executable code is compressed")
+    assert result.refusal.detail.startswith(("9", "100"))
+
+
+def test_the_packed_gate_reports_the_sweep_it_judged(tmp_path: Path) -> None:
+    target = compressed_copy(FIXTURES / "fixture-pe-x64.exe", tmp_path / "packed.exe")
+    result = report.analyse(target)
+    assert result.sweep is not None
+    assert result.sweep.compressed_share >= report.PACKED_SHARE
+    assert result.binary is not None
+
+
+@pytest.mark.parametrize("name", CLEAN)
+def test_a_clean_binary_stays_clear_of_the_packed_gate(name: str) -> None:
+    assert report.analyse(FIXTURES / name).refusal is None
+
+
+def test_one_readable_region_keeps_the_digest(tmp_path: Path) -> None:
+    source = FIXTURES / "fixture-pe-x64.exe"
+    parsed = lief.parse(str(source))
+    executable = [s for s in parsed.sections if s.characteristics & loader.PE_SECTION_EXECUTE]
+    if len(executable) < 2:
+        pytest.skip("fixture carries one executable section")
+    target = compressed_copy(source, tmp_path / "partial.exe", regions=1)
+    assert report.analyse(target).digest is not None
+
+
+def test_the_packed_gate_is_declared_after_the_first_three() -> None:
+    assert report.GATES[3] == report.PACKED
+    assert report.PACKED not in report.GATES[:3]
 
 
 @pytest.mark.parametrize(
