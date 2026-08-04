@@ -18,8 +18,6 @@ import numpy
 
 lief.logging.disable()
 
-# Measured over 630 corpus samples: clean binaries top out at 6.71 while UPX starts at
-# 7.83, ASPack at 7.76 and Themida at 7.94. Low-entropy packers evade this by design.
 ENTROPY_THRESHOLD = 7.2
 
 # Rounding holds the swept-or-skipped decision steady across platform maths libraries.

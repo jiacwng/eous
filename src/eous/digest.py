@@ -31,8 +31,6 @@ SEPARATOR = b"\x1f"
 OOV = "<oov>"
 MAX_OOV_PER_SHINGLE = 1
 
-# Above this size ratio the estimate turns unreliable: at ratio 67 a strict subset
-# reported containment 0.0 in 12 of 40 trials.
 MAX_CONTAINMENT_RATIO = 4.0
 
 PERMUTATION_PERSON = b"eous-prm"
