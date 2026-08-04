@@ -11,8 +11,7 @@ from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs
 
 from eous.loader import ENTROPY_THRESHOLD, Binary
 
-# Per region, since a shared pool drained in parse order would tie the digest to the
-# order sections appear in the file. Measured: 2 of 160 corpus binaries reach it.
+# Per region, so the digest stays independent of the order sections appear in the file.
 MAX_INSTRUCTIONS = 500_000
 
 MAX_STALLS = 20_000
@@ -98,8 +97,6 @@ def sweep(
             reports.append(RegionReport(section.name, 0, EMPTY, 0))
             continue
 
-        # Compressed bytes decode into noise: measured 30 seconds of garbage on one 3 MB
-        # section at entropy 7.96.
         if section.entropy >= entropy_threshold:
             reports.append(RegionReport(section.name, 0, ENTROPY, 0))
             continue
