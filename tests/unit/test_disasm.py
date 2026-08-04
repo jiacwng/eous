@@ -250,24 +250,37 @@ def test_every_region_gets_a_named_report() -> None:
     assert [r.name for r in result.reports] == [".text"]
 
 
-def test_all_regions_skipped_for_entropy_is_true_when_they_are() -> None:
+def test_every_region_compressed_gives_a_full_share() -> None:
     packed = section(os.urandom(8192))
-    assert disasm.sweep(binary(packed)).all_regions_skipped_for_entropy
+    assert disasm.sweep(binary(packed)).compressed_share == 1.0
 
 
-def test_one_readable_region_clears_the_entropy_verdict() -> None:
+def test_a_substantial_readable_region_lowers_the_share() -> None:
+    packed = section(os.urandom(8192), name=".a", virtual_address=0x1000)
+    clean = section((XOR_EAX + RET) * 4096, name=".b", virtual_address=0x2000)
+    assert disasm.sweep(binary(packed, clean)).compressed_share < 0.5
+
+
+# A section holds at most log2(size) bits of entropy, so a tiny readable region can sit
+# beside a compressed one without meaning the binary is readable.
+def test_a_tiny_readable_region_leaves_the_share_high() -> None:
     packed = section(os.urandom(8192), name=".a", virtual_address=0x1000)
     clean = section(XOR_EAX + RET, name=".b", virtual_address=0x2000)
-    assert not disasm.sweep(binary(packed, clean)).all_regions_skipped_for_entropy
+    assert disasm.sweep(binary(packed, clean)).compressed_share > 0.99
 
 
-def test_a_binary_holding_only_data_clears_the_entropy_verdict() -> None:
+def test_a_binary_holding_only_data_has_no_share() -> None:
     quiet = section(XOR_EAX, name=".rdata", executable=False)
-    assert not disasm.sweep(binary(quiet)).all_regions_skipped_for_entropy
+    assert disasm.sweep(binary(quiet)).compressed_share == 0.0
 
 
-def test_an_empty_region_clears_the_entropy_verdict() -> None:
-    assert not disasm.sweep(binary(section(b""))).all_regions_skipped_for_entropy
+def test_an_empty_region_has_no_share() -> None:
+    assert disasm.sweep(binary(section(b""))).compressed_share == 0.0
+
+
+def test_a_readable_binary_has_no_compressed_share() -> None:
+    clean = section((XOR_EAX + RET) * 64)
+    assert disasm.sweep(binary(clean)).compressed_share == 0.0
 
 
 def test_results_are_frozen() -> None:
