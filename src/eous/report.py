@@ -13,11 +13,12 @@ UNREADABLE = "unreadable"
 UNSUPPORTED_FORMAT = "unsupported_format"
 UNSUPPORTED_ARCH = "unsupported_arch"
 PACKED = "packed"
+MANAGED = "managed"
 
 # A binary keeping a tenth of its code readable still has code worth digesting.
 PACKED_SHARE = 0.9
 
-GATES = (UNREADABLE, UNSUPPORTED_FORMAT, UNSUPPORTED_ARCH, PACKED)
+GATES = (UNREADABLE, UNSUPPORTED_FORMAT, UNSUPPORTED_ARCH, PACKED, MANAGED)
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,11 @@ def analyse(path: Path) -> Analysis:
         return _refuse(path, UNSUPPORTED_ARCH, str(exc))
     except loader.LoaderError as exc:
         return _refuse(path, UNREADABLE, str(exc))
+
+    # Judged before the sweep, since an assembly holding only bytecode has no native
+    # instructions to read.
+    if binary.is_il_only and not binary.has_managed_native:
+        return _refuse(path, MANAGED, "il only, no native code", binary)
 
     sweep = disasm.sweep(binary)
     if sweep.compressed_share >= PACKED_SHARE:
