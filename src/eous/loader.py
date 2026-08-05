@@ -25,7 +25,6 @@ ENTROPY_DECIMALS = 6
 
 SUPPORTED_FORMATS = ("pe", "elf")
 SUPPORTED_ARCHES = ("x86", "x86-64")
-ENTROPY_BLOCK = 1 << 20
 
 PE_SECTION_EXECUTE = 0x20000000
 PE_SECTION_WRITE = 0x80000000
@@ -98,9 +97,6 @@ class Binary:
     arch: str
     entry_point: int
     sections: tuple[Section, ...]
-    has_section_table: bool
-    import_count: int
-    is_managed: bool
     is_il_only: bool
     has_managed_native: bool
 
@@ -130,22 +126,10 @@ def data_entropy(data: bytes) -> float:
     return round(shannon(counts.tolist()), ENTROPY_DECIMALS)
 
 
-def file_entropy(path: Path) -> float:
-    counts = numpy.zeros(256, dtype=numpy.int64)
-    try:
-        with path.open("rb") as handle:
-            while block := handle.read(ENTROPY_BLOCK):
-                counts += numpy.bincount(numpy.frombuffer(block, dtype=numpy.uint8), minlength=256)
-    except OSError as exc:
-        raise LoaderError(f"cannot read: {exc}") from exc
-
-    return round(shannon(counts.tolist()), ENTROPY_DECIMALS)
-
-
-def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
+def read_clr(binary: ClrSource) -> tuple[bool, bool]:
     directory = binary.data_directory(CLR_DIRECTORY_KEY)
     if directory is None or directory.size == 0:
-        return (False, False, False)
+        return (False, False)
 
     try:
         header = bytes(binary.get_content_from_virtual_address(directory.rva, COR20_MINIMUM))
@@ -153,13 +137,13 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
         header = b""
 
     if len(header) < COR20_MINIMUM:
-        return (True, False, False)
+        return (False, False)
 
     # ECMA-335 fixes this field at 72. Demanding the exact value stops a forged data
     # directory from pointing at ordinary code and handing us arbitrary flags.
     declared_size = struct.unpack_from("<I", header, 0)[0]
     if declared_size != COR20_MINIMUM:
-        return (True, False, False)
+        return (False, False)
 
     flags = struct.unpack_from("<I", header, COR20_FLAGS_OFFSET)[0]
     _, native_size = struct.unpack_from("<II", header, COR20_NATIVE_OFFSET)
@@ -167,7 +151,7 @@ def read_clr(binary: ClrSource) -> tuple[bool, bool, bool]:
     il_only = bool(flags & COR20_IL_ONLY)
     # A non-empty ManagedNativeHeader means precompiled native code, whatever IL-only says.
     has_native = native_size != 0
-    return (True, il_only, has_native)
+    return (il_only, has_native)
 
 
 def load(path: Path) -> Binary:
@@ -211,7 +195,7 @@ def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
         )
         for section in parsed.sections
     )
-    is_managed, is_il_only, has_managed_native = read_clr(parsed)
+    is_il_only, has_managed_native = read_clr(parsed)
 
     return Binary(
         path=path,
@@ -219,11 +203,6 @@ def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
         arch=arch,
         entry_point=parsed.optional_header.addressof_entrypoint,
         sections=sections,
-        has_section_table=bool(sections),
-        # Functions, so the count carries one meaning in both formats. Counting PE
-        # libraries would read 7 where the function count is 35.
-        import_count=len(parsed.imported_functions),
-        is_managed=is_managed,
         is_il_only=is_il_only,
         has_managed_native=has_managed_native,
     )
@@ -246,8 +225,6 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
         )
         for section in parsed.sections
     )
-    has_section_table = len(parsed.sections) > 0
-
     # A stripped ELF keeps its loadable segments, which is the usual shape of packed ELF.
     if not any(section.executable for section in sections):
         sections = sections + _executable_segments(parsed)
@@ -258,9 +235,6 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
         arch=arch,
         entry_point=parsed.header.entrypoint,
         sections=sections,
-        has_section_table=has_section_table,
-        import_count=len(parsed.imported_functions),
-        is_managed=False,
         is_il_only=False,
         has_managed_native=False,
     )

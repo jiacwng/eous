@@ -168,9 +168,6 @@ def managed(
         arch=source.arch,
         entry_point=source.entry_point,
         sections=sections,
-        has_section_table=source.has_section_table,
-        import_count=source.import_count,
-        is_managed=True,
         is_il_only=il_only,
         has_managed_native=native,
     )

@@ -43,7 +43,6 @@ def test_entry_point_is_set(fixture_case: tuple[Path, str, str]) -> None:
 
 def test_sections_are_present(fixture_case: tuple[Path, str, str]) -> None:
     binary = loader.load(fixture_case[0])
-    assert binary.has_section_table
     assert len(binary.sections) > 1
 
 
@@ -69,23 +68,8 @@ def test_section_entropy_is_within_range(fixture_case: tuple[Path, str, str]) ->
 
 def test_compiled_fixtures_read_as_native(fixture_case: tuple[Path, str, str]) -> None:
     binary = loader.load(fixture_case[0])
-    assert binary.is_managed is False
     assert binary.is_il_only is False
     assert binary.has_managed_native is False
-
-
-# Counting PE libraries would report 7 for a binary importing 35 functions.
-@pytest.mark.parametrize(
-    ("name", "expected"),
-    [("fixture-pe-x64.exe", 35), ("fixture-pe-x86.exe", 34)],
-)
-def test_pe_import_count_counts_functions(name: str, expected: int) -> None:
-    assert loader.load(FIXTURES / name).import_count == expected
-
-
-def test_clean_fixtures_carry_enough_imports_to_look_unpacked() -> None:
-    for name in ["fixture-pe-x64.exe", "fixture-pe-x86.exe"]:
-        assert loader.load(FIXTURES / name).import_count >= 10
 
 
 def test_binary_is_frozen() -> None:
@@ -135,26 +119,6 @@ def test_data_entropy_of_a_repeated_byte_is_zero() -> None:
     assert loader.data_entropy(b"\x00" * 4096) == 0.0
 
 
-def test_file_entropy_of_an_empty_file_is_zero(tmp_path: Path) -> None:
-    empty = tmp_path / "empty.bin"
-    empty.write_bytes(b"")
-    assert loader.file_entropy(empty) == 0.0
-
-
-def test_file_entropy_matches_data_entropy(tmp_path: Path) -> None:
-    payload = bytes(range(256)) * 40
-    target = tmp_path / "payload.bin"
-    target.write_bytes(payload)
-    assert loader.file_entropy(target) == pytest.approx(loader.data_entropy(payload))
-
-
-def test_file_entropy_spans_more_than_one_block(tmp_path: Path) -> None:
-    payload = bytes(range(256)) * (loader.ENTROPY_BLOCK // 128)
-    target = tmp_path / "big.bin"
-    target.write_bytes(payload)
-    assert loader.file_entropy(target) == pytest.approx(8.0)
-
-
 def test_entropy_threshold_sits_below_the_maximum() -> None:
     assert 0.0 < loader.ENTROPY_THRESHOLD < 8.0
 
@@ -164,13 +128,6 @@ def test_entropy_threshold_sits_below_the_maximum() -> None:
 def test_entropy_is_rounded_to_a_fixed_precision() -> None:
     value = loader.data_entropy(bytes(range(256)) * 7 + b"\x01\x02\x03")
     assert value == round(value, loader.ENTROPY_DECIMALS)
-
-
-def test_file_and_data_entropy_agree_exactly(tmp_path: Path) -> None:
-    payload = bytes(range(256)) * 13 + b"\x07" * 11
-    target = tmp_path / "payload.bin"
-    target.write_bytes(payload)
-    assert loader.file_entropy(target) == loader.data_entropy(payload)
 
 
 def test_compiled_code_entropy_stays_under_the_threshold() -> None:
@@ -287,7 +244,6 @@ def test_a_stripped_elf_still_presents_its_code(tmp_path: Path) -> None:
     binary = loader.load(target)
     assert binary.format == "elf"
     assert binary.arch == "x86-64"
-    assert binary.has_section_table is False
     assert binary.executable_sections
     assert b"".join(s.data for s in binary.executable_sections) == code
 
@@ -305,16 +261,10 @@ def test_a_stripped_elf_reports_its_segment_as_executable(tmp_path: Path) -> Non
 
 def test_a_binary_keeping_its_sections_ignores_the_segment_fallback() -> None:
     binary = loader.load(FIXTURES / "fixture-elf-x64")
-    assert binary.has_section_table
     assert all(not s.name.startswith("segment") for s in binary.executable_sections)
 
 
 # ---- CLR --------------------------------------------------------------------
-
-
-def test_unreadable_file_entropy_raises(tmp_path: Path) -> None:
-    with pytest.raises(LoaderError, match="cannot read"):
-        loader.file_entropy(tmp_path)
 
 
 def test_a_parser_failure_becomes_a_loader_error(
@@ -370,7 +320,7 @@ def make_cor20(flags: int, native_rva: int = 0, native_size: int = 0) -> bytes:
 
 
 def test_absent_clr_directory_reads_as_native() -> None:
-    assert loader.read_clr(FakePE(0, 0, b"")) == (False, False, False)
+    assert loader.read_clr(FakePE(0, 0, b"")) == (False, False)
 
 
 # Data directory 14 is attacker-controlled. Pointing it at ordinary code would otherwise
@@ -379,20 +329,20 @@ def test_absent_clr_directory_reads_as_native() -> None:
 def test_a_header_declaring_an_impossible_size_is_distrusted() -> None:
     forged = bytearray(make_cor20(flags=COR20_IL_ONLY))
     struct.pack_into("<I", forged, 0, 0xDEADBEEF)
-    assert loader.read_clr(FakePE(0x2000, 72, bytes(forged))) == (True, False, False)
+    assert loader.read_clr(FakePE(0x2000, 72, bytes(forged))) == (False, False)
 
 
 def test_arbitrary_code_bytes_are_distrusted_as_a_header() -> None:
     text = bytes(range(72))
-    managed, il_only, native = loader.read_clr(FakePE(0x2000, 72, text))
-    assert (managed, il_only, native) == (True, False, False)
+    il_only, native = loader.read_clr(FakePE(0x2000, 72, text))
+    assert (il_only, native) == (False, False)
 
 
 # The spec biases toward looking: a non-empty ManagedNativeHeader means precompiled native
 # code whatever the IL-only bit says, and size alone settles it.
 def test_a_native_header_with_a_zero_address_still_counts() -> None:
     fake = FakePE(0x2000, 72, make_cor20(flags=COR20_IL_ONLY, native_rva=0, native_size=64))
-    assert loader.read_clr(fake) == (True, True, True)
+    assert loader.read_clr(fake) == (True, True)
 
 
 def test_a_missing_clr_directory_reads_as_native() -> None:
@@ -403,28 +353,28 @@ def test_a_missing_clr_directory_reads_as_native() -> None:
         def get_content_from_virtual_address(self, rva: int, size: int) -> bytes:
             return b""
 
-    assert loader.read_clr(NoDirectory()) == (False, False, False)
+    assert loader.read_clr(NoDirectory()) == (False, False)
 
 
 def test_il_only_assembly_is_pure_managed() -> None:
     fake = FakePE(0x2000, 72, make_cor20(flags=0x1))
-    assert loader.read_clr(fake) == (True, True, False)
+    assert loader.read_clr(fake) == (True, False)
 
 
 def test_mixed_mode_assembly_keeps_native_code() -> None:
     fake = FakePE(0x2000, 72, make_cor20(flags=0x0))
-    managed, il_only, native = loader.read_clr(fake)
-    assert (managed, il_only, native) == (True, False, False)
+    il_only, native = loader.read_clr(fake)
+    assert (il_only, native) == (False, False)
 
 
 def test_ready_to_run_assembly_is_flagged_native() -> None:
     fake = FakePE(0x2000, 72, make_cor20(flags=0x1, native_rva=0x5000, native_size=64))
-    assert loader.read_clr(fake) == (True, True, True)
+    assert loader.read_clr(fake) == (True, True)
 
 
 def test_unreadable_cor20_falls_back_to_presence() -> None:
     fake = FakePE(0x2000, 72, b"")
-    assert loader.read_clr(fake) == (True, False, False)
+    assert loader.read_clr(fake) == (False, False)
 
 
 def test_shannon_stays_within_eight_bits() -> None:
