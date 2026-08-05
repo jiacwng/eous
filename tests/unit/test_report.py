@@ -10,6 +10,7 @@ from eous import loader, report
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 
 CLEAN = ["fixture-pe-x64.exe", "fixture-pe-x86.exe", "fixture-elf-x64", "fixture-elf-x86"]
+PE64 = FIXTURES / "fixture-pe-x64.exe"
 
 
 def elf_header(machine: int) -> bytes:
@@ -141,6 +142,78 @@ def test_one_readable_region_keeps_the_digest(tmp_path: Path) -> None:
         pytest.skip("fixture carries one executable section")
     target = compressed_copy(source, tmp_path / "partial.exe", regions=1)
     assert report.analyse(target).digest is not None
+
+
+def managed(
+    monkeypatch: pytest.MonkeyPatch, *, il_only: bool, native: bool, entropy_bytes: bytes = b""
+) -> None:
+    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
+    sections = source.sections
+    if entropy_bytes:
+        sections = tuple(
+            loader.Section(
+                name=s.name,
+                virtual_address=s.virtual_address,
+                virtual_size=s.virtual_size,
+                raw_size=len(entropy_bytes),
+                executable=s.executable,
+                writable=s.writable,
+                data=entropy_bytes if s.executable else s.data,
+            )
+            for s in sections
+        )
+    posed = loader.Binary(
+        path=source.path,
+        format=source.format,
+        arch=source.arch,
+        entry_point=source.entry_point,
+        sections=sections,
+        has_section_table=source.has_section_table,
+        import_count=source.import_count,
+        is_managed=True,
+        is_il_only=il_only,
+        has_managed_native=native,
+    )
+    monkeypatch.setattr(report.loader, "load", lambda _: posed)
+
+
+def test_an_il_only_assembly_refuses_as_managed(monkeypatch: pytest.MonkeyPatch) -> None:
+    managed(monkeypatch, il_only=True, native=False)
+    result = report.analyse(PE64)
+    assert result.digest is None
+    assert result.refusal is not None
+    assert result.refusal.gate == report.MANAGED
+    assert result.refusal.detail == "il only, no native code"
+
+
+def test_a_mixed_mode_assembly_still_digests(monkeypatch: pytest.MonkeyPatch) -> None:
+    managed(monkeypatch, il_only=True, native=True)
+    assert report.analyse(PE64).digest is not None
+
+
+def test_an_assembly_carrying_native_code_still_digests(monkeypatch: pytest.MonkeyPatch) -> None:
+    managed(monkeypatch, il_only=False, native=False)
+    assert report.analyse(PE64).digest is not None
+
+
+# The header is attacker-controlled, so a distrusted one reads as not-il-only and the
+# binary gets swept rather than waved through.
+def test_a_distrusted_header_leaves_the_binary_swept(monkeypatch: pytest.MonkeyPatch) -> None:
+    managed(monkeypatch, il_only=False, native=False)
+    assert report.analyse(PE64).sweep is not None
+
+
+# Managed is judged before the sweep, so an il-only assembly never reports as packed.
+def test_managed_is_judged_before_packed(monkeypatch: pytest.MonkeyPatch) -> None:
+    managed(monkeypatch, il_only=True, native=False, entropy_bytes=random.randbytes(8192))
+    assert report.analyse(PE64).refusal.gate == report.MANAGED
+
+
+def test_the_managed_gate_carries_no_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    managed(monkeypatch, il_only=True, native=False)
+    result = report.analyse(PE64)
+    assert result.binary is not None
+    assert result.sweep is None
 
 
 def test_the_packed_gate_is_declared_after_the_first_three() -> None:
