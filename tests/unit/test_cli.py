@@ -1,5 +1,8 @@
+import errno
+import io
 import json
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,6 +91,67 @@ def test_quiet_holds_back_the_refusal_text(
     target.write_bytes(b"text" * 50)
     assert cli.main(["hash", "--quiet", str(target)]) == cli.REFUSED
     assert output.readouterr().err == ""
+
+
+# ---- a closed reader ---------------------------------------------------------
+
+
+class ClosedPipe(io.StringIO):
+    def __init__(self, code: int) -> None:
+        super().__init__()
+        self.code = code
+
+    def write(self, text: str) -> int:
+        raise OSError(self.code, "the reader is gone")
+
+
+# `eous hash samples/ | head` closes the pipe mid-run, and neither platform's error for
+# that is an internal fault.
+@pytest.mark.parametrize("code", cli.CLOSED_PIPE)
+def test_a_closed_reader_ends_the_run_quietly(
+    code: int, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "stdout", ClosedPipe(code))
+    assert cli.main(["hash", str(CLEAN)]) == cli.OK
+    assert output.readouterr().err == ""
+
+
+def test_a_closed_reader_ends_a_comparison_quietly(
+    monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EPIPE))
+    assert cli.main(["compare", str(CLEAN), str(CLEAN)]) == cli.OK
+
+
+def test_an_unrelated_os_error_is_still_internal(
+    monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EACCES))
+    assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
+    assert "internal error" in output.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="EINVAL is the closed-pipe error here")
+def test_einval_stays_internal_away_from_windows(
+    monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EINVAL))
+    assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
+
+
+def test_quietening_stdout_swallows_what_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "out.txt"
+    with target.open("w") as handle:
+        monkeypatch.setattr(sys, "stdout", handle)
+        cli._quieten_stdout()
+        handle.write("this reaches the null device")
+    assert target.read_text() == ""
+
+
+def test_the_help_names_the_closed_reader(output: pytest.CaptureFixture[str]) -> None:
+    assert "closed the output" in cli.build_parser().format_help()
 
 
 # ---- json -------------------------------------------------------------------
