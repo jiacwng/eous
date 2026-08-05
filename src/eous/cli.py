@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
 import json
+import os
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -14,6 +17,9 @@ OK = 0
 REFUSED = 1
 USAGE = 2
 INTERNAL = 3
+
+# Windows reports a write to a closed pipe as EINVAL where POSIX raises EPIPE.
+CLOSED_PIPE = (errno.EPIPE, errno.EINVAL) if sys.platform == "win32" else (errno.EPIPE,)
 
 
 DESCRIPTION = """\
@@ -32,7 +38,7 @@ digest format:
    the format version, so two digests compare only when it matches
 
 exit codes:
-  0  every file digested
+  0  every file digested, or the reader closed the output early
   1  at least one file refused, with the cause on stderr
   2  usage error
   3  internal error
@@ -118,11 +124,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "compare" and args.left and args.right:
             return _run_compare(args)
     except Exception as exc:
+        if isinstance(exc, OSError) and exc.errno in CLOSED_PIPE:
+            _quieten_stdout()
+            return OK
         print(f"eous: internal error: {exc}", file=sys.stderr)
         return INTERNAL
 
     parser.print_usage(sys.stderr)
     return USAGE
+
+
+def _quieten_stdout() -> None:
+    # The reader is gone, so the interpreter's closing flush needs somewhere to land.
+    with contextlib.suppress(OSError, ValueError):
+        target = sys.stdout.fileno()
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, target)
+        os.close(devnull)
 
 
 def _run_hash(args: argparse.Namespace) -> int:
