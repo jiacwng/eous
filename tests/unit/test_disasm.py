@@ -42,9 +42,6 @@ def binary(*sections: loader.Section, arch: str = "x86") -> loader.Binary:
         arch=arch,
         entry_point=0x1000,
         sections=tuple(sections),
-        has_section_table=True,
-        import_count=0,
-        is_managed=False,
         is_il_only=False,
         has_managed_native=False,
     )
