@@ -126,14 +126,23 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run_hash(args: argparse.Namespace) -> int:
-    results = [report.analyse(path) for path in args.paths]
+    labelled = len(args.paths) > 1
+    records: list[dict[str, object]] = []
+    refused = False
+
+    # Each result is printed and dropped, so a folder scan holds one file at a time.
+    for path in args.paths:
+        result = report.analyse(path)
+        refused = refused or result.refusal is not None
+        if args.json:
+            records.append(_as_record(result))
+        else:
+            _print_line(result, labelled=labelled, quiet=args.quiet)
 
     if args.json:
-        print(json.dumps({"meta": _meta(), "results": [_as_record(r) for r in results]}, indent=1))
-    else:
-        _print_lines(results, labelled=len(results) > 1, quiet=args.quiet)
+        print(json.dumps({"meta": _meta(), "results": records}, indent=1))
 
-    return REFUSED if any(r.refusal for r in results) else OK
+    return REFUSED if refused else OK
 
 
 def _run_compare(args: argparse.Namespace) -> int:
@@ -205,14 +214,13 @@ def _as_scores(scores: digest.Scores, labels: list[str]) -> dict[str, object]:
     }
 
 
-def _print_lines(results: list[report.Analysis], labelled: bool, quiet: bool) -> None:
-    for result in results:
-        if result.digest is not None:
-            line = f"{result.path.name}  {result.digest}" if labelled else result.digest
-            print(line)
-        elif result.refusal is not None and not quiet:
-            gate, detail = result.refusal.gate, result.refusal.detail
-            print(f"eous: {result.path.name}: {gate}: {detail}", file=sys.stderr)
+def _print_line(result: report.Analysis, labelled: bool, quiet: bool) -> None:
+    if result.digest is not None:
+        line = f"{result.path.name}  {result.digest}" if labelled else result.digest
+        print(line, flush=True)
+    elif result.refusal is not None and not quiet:
+        gate, detail = result.refusal.gate, result.refusal.detail
+        print(f"eous: {result.path.name}: {gate}: {detail}", file=sys.stderr)
 
 
 def _as_record(result: report.Analysis) -> dict[str, object]:
