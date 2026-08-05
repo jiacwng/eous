@@ -1,5 +1,6 @@
 import random
 import struct
+from dataclasses import fields
 from pathlib import Path
 
 import lief
@@ -31,11 +32,13 @@ def test_a_clean_fixture_yields_a_digest(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", CLEAN)
-def test_a_clean_fixture_carries_its_intermediate_stages(name: str) -> None:
-    result = report.analyse(FIXTURES / name)
-    assert result.binary is not None
-    assert result.sweep is not None
-    assert result.path == FIXTURES / name
+def test_a_clean_fixture_names_the_path_it_read(name: str) -> None:
+    assert report.analyse(FIXTURES / name).path == FIXTURES / name
+
+
+# A field holding section bytes or chunks would scale a batch's memory with the folder.
+def test_an_analysis_carries_only_what_is_printed() -> None:
+    assert [f.name for f in fields(report.Analysis)] == ["path", "digest", "refusal"]
 
 
 # Exactly one of digest and refusal is set. A tool that returns both, or neither, would
@@ -121,14 +124,6 @@ def test_a_compressed_binary_refuses_as_packed(tmp_path: Path, name: str) -> Non
     assert result.refusal.detail.startswith(("9", "100"))
 
 
-def test_the_packed_gate_reports_the_sweep_it_judged(tmp_path: Path) -> None:
-    target = compressed_copy(FIXTURES / "fixture-pe-x64.exe", tmp_path / "packed.exe")
-    result = report.analyse(target)
-    assert result.sweep is not None
-    assert result.sweep.compressed_share >= report.PACKED_SHARE
-    assert result.binary is not None
-
-
 @pytest.mark.parametrize("name", CLEAN)
 def test_a_clean_binary_stays_clear_of_the_packed_gate(name: str) -> None:
     assert report.analyse(FIXTURES / name).refusal is None
@@ -197,7 +192,7 @@ def test_an_assembly_carrying_native_code_still_digests(monkeypatch: pytest.Monk
 # binary gets swept rather than waved through.
 def test_a_distrusted_header_leaves_the_binary_swept(monkeypatch: pytest.MonkeyPatch) -> None:
     managed(monkeypatch, il_only=False, native=False)
-    assert report.analyse(PE64).sweep is not None
+    assert report.analyse(PE64).digest is not None
 
 
 # Managed is judged before the sweep, so an il-only assembly never reports as packed.
@@ -206,11 +201,13 @@ def test_managed_is_judged_before_packed(monkeypatch: pytest.MonkeyPatch) -> Non
     assert report.analyse(PE64).refusal.gate == report.MANAGED
 
 
-def test_the_managed_gate_carries_no_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_managed_gate_runs_no_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unreachable(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the sweep ran")
+
     managed(monkeypatch, il_only=True, native=False)
-    result = report.analyse(PE64)
-    assert result.binary is not None
-    assert result.sweep is None
+    monkeypatch.setattr(report.disasm, "sweep", unreachable)
+    assert report.analyse(PE64).refusal.gate == report.MANAGED
 
 
 def test_the_packed_gate_is_declared_after_the_first_three() -> None:
