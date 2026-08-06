@@ -8,6 +8,8 @@ import errno
 import json
 import os
 import sys
+from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -152,8 +154,7 @@ def _run_hash(args: argparse.Namespace) -> int:
     refused = False
 
     # Each result is printed and dropped, so a folder scan holds one file at a time.
-    for path in paths:
-        result = report.analyse(path)
+    for result in _analyse(paths):
         refused = refused or result.refusal is not None
         if args.json:
             records.append(_as_record(result))
@@ -233,6 +234,16 @@ def _as_scores(scores: digest.Scores, labels: list[str]) -> dict[str, object]:
         "left_in_right": rounded(scores.left_in_right),
         "right_in_left": rounded(scores.right_in_left),
     }
+
+
+def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
+    # One file pays more to start a worker than to read itself.
+    if len(paths) < 2:
+        yield from (report.analyse(path) for path in paths)
+        return
+
+    with ProcessPoolExecutor() as pool:
+        yield from pool.map(report.analyse, paths)
 
 
 def _expand(paths: list[Path]) -> list[Path]:
