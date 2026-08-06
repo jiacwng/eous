@@ -45,7 +45,8 @@ exit codes:
 
 examples:
   eous hash program.exe
-  eous hash --json bin/* > digests.json
+  eous hash samples/ > digests.txt
+  eous hash --json samples/ > digests.json
   eous compare old.exe new.exe
   eous compare EO1:x86-64:56:eb7d... EO1:x86-64:3136:5cfc...
 
@@ -86,9 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
     hash_command = commands.add_parser(
         "hash",
         help="print a digest for each file",
-        description="Print one digest per file, or the cause when a file is refused.",
+        description="Print one digest per file, or the cause when a file is refused. "
+        "A directory is walked, and every file under it is digested.",
     )
-    hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE")
+    hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE-OR-DIR")
     hash_command.add_argument("--json", action="store_true", help="machine-readable output")
     hash_command.add_argument("--quiet", action="store_true", help="hold back refusal text")
 
@@ -144,12 +146,13 @@ def _quieten_stdout() -> None:
 
 
 def _run_hash(args: argparse.Namespace) -> int:
-    labelled = len(args.paths) > 1
+    paths = _expand(args.paths)
+    labelled = len(paths) > 1 or paths != args.paths
     records: list[dict[str, object]] = []
     refused = False
 
     # Each result is printed and dropped, so a folder scan holds one file at a time.
-    for path in args.paths:
+    for path in paths:
         result = report.analyse(path)
         refused = refused or result.refusal is not None
         if args.json:
@@ -179,7 +182,7 @@ def _run_compare(args: argparse.Namespace) -> int:
         if result.digest is None:
             cause = result.refusal
             reason = f"{cause.gate}: {cause.detail}" if cause else "no digest"
-            print(f"eous: {path.name}: {reason}", file=sys.stderr)
+            print(f"eous: {path}: {reason}", file=sys.stderr)
             return REFUSED
         resolved.append(result.digest)
         labels.append(text)
@@ -232,13 +235,26 @@ def _as_scores(scores: digest.Scores, labels: list[str]) -> dict[str, object]:
     }
 
 
+def _expand(paths: list[Path]) -> list[Path]:
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        walked = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
+        for candidate in walked:
+            real = candidate.resolve()
+            if real not in seen:
+                seen.add(real)
+                found.append(candidate)
+    return found
+
+
 def _print_line(result: report.Analysis, labelled: bool, quiet: bool) -> None:
     if result.digest is not None:
-        line = f"{result.path.name}  {result.digest}" if labelled else result.digest
+        line = f"{result.path}  {result.digest}" if labelled else result.digest
         print(line, flush=True)
     elif result.refusal is not None and not quiet:
         gate, detail = result.refusal.gate, result.refusal.detail
-        print(f"eous: {result.path.name}: {gate}: {detail}", file=sys.stderr)
+        print(f"eous: {result.path}: {gate}: {detail}", file=sys.stderr)
 
 
 def _as_record(result: report.Analysis) -> dict[str, object]:
