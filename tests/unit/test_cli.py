@@ -52,6 +52,121 @@ def test_one_file_prints_the_digest_alone(output: pytest.CaptureFixture[str]) ->
     assert output.readouterr().out.count(":") == 3
 
 
+# ---- directories ------------------------------------------------------------
+
+
+def plant(root: Path, *names: str) -> None:
+    for name in names:
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(CLEAN.read_bytes())
+
+
+def test_a_directory_digests_every_file_under_it(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "a.exe", "b.exe")
+    assert cli.main(["hash", str(tmp_path)]) == cli.OK
+    assert len(output.readouterr().out.strip().splitlines()) == 2
+
+
+def test_a_directory_is_walked_to_the_bottom(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "top.exe", "one/middle.exe", "one/two/deep.exe")
+    assert cli.main(["hash", str(tmp_path)]) == cli.OK
+    assert len(output.readouterr().out.strip().splitlines()) == 3
+
+
+# Two runs over one folder must agree, so the walk is sorted before it is digested.
+def test_a_directory_is_walked_in_a_settled_order(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "c.exe", "a.exe", "b.exe")
+    cli.main(["hash", str(tmp_path)])
+    first = output.readouterr().out
+    cli.main(["hash", str(tmp_path)])
+    assert output.readouterr().out == first
+    assert [line.split("  ")[0] for line in first.strip().splitlines()] == [
+        str(tmp_path / name) for name in ("a.exe", "b.exe", "c.exe")
+    ]
+
+
+# The caller named the folder, so every line says which file it found.
+def test_a_walked_file_carries_its_path(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    plant(tmp_path, "v1/prog.exe", "v2/prog.exe")
+    cli.main(["hash", str(tmp_path)])
+    lines = output.readouterr().out.strip().splitlines()
+    assert lines[0].startswith(f"{tmp_path / 'v1' / 'prog.exe'}  ")
+    assert lines[1].startswith(f"{tmp_path / 'v2' / 'prog.exe'}  ")
+
+
+def test_one_file_in_a_directory_is_still_labelled(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "only.exe")
+    cli.main(["hash", str(tmp_path)])
+    assert output.readouterr().out.startswith(str(tmp_path / "only.exe"))
+
+
+def test_an_empty_directory_digests_nothing(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["hash", str(tmp_path)]) == cli.OK
+    captured = output.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_a_directory_and_a_named_file_run_together(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "inside.exe")
+    assert cli.main(["hash", str(tmp_path), str(CLEAN)]) == cli.OK
+    assert len(output.readouterr().out.strip().splitlines()) == 2
+
+
+def test_a_refusal_inside_a_directory_exits_one(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "good.exe")
+    (tmp_path / "junk.bin").write_bytes(b"text" * 50)
+    assert cli.main(["hash", str(tmp_path)]) == cli.REFUSED
+    captured = output.readouterr()
+    assert "EO1:" in captured.out
+    assert str(tmp_path / "junk.bin") in captured.err
+
+
+def test_one_file_named_twice_is_digested_once(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "one.exe")
+    target = str(tmp_path / "one.exe")
+    assert cli.main(["hash", target, target]) == cli.OK
+    assert len(output.readouterr().out.strip().splitlines()) == 1
+
+
+# A junction pointing at its own parent hands the walk the same file at every level.
+def test_a_directory_reached_twice_is_digested_once(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "sub/one.exe")
+    assert cli.main(["hash", str(tmp_path), str(tmp_path / "sub")]) == cli.OK
+    assert len(output.readouterr().out.strip().splitlines()) == 1
+
+
+def test_a_directory_carries_its_paths_into_json(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "one.exe", "sub/two.exe")
+    cli.main(["hash", "--json", str(tmp_path)])
+    payload = json.loads(output.readouterr().out)
+    assert [row["path"] for row in payload["results"]] == [
+        str(tmp_path / "one.exe"),
+        str(tmp_path / "sub" / "two.exe"),
+    ]
+
+
 # ---- refusals ---------------------------------------------------------------
 
 
@@ -233,6 +348,7 @@ def test_help_lists_every_exit_code(output: pytest.CaptureFixture[str]) -> None:
 def test_help_shows_a_runnable_example(output: pytest.CaptureFixture[str]) -> None:
     text = cli.build_parser().format_help()
     assert "eous hash program.exe" in text
+    assert "eous hash samples/" in text
 
 
 def test_help_states_the_supported_scope(output: pytest.CaptureFixture[str]) -> None:
