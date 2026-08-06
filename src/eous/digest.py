@@ -1,4 +1,4 @@
-# Turns chunks of mnemonics into an EO1 digest, and compares two digests.
+# Turns chunks of mnemonics into an EO1 digest, and scores digests against each other.
 #
 # A digest reads EO1:arch:cardinality:sketch. Changing any constant below changes every
 # digest, so the version string changes with them.
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from math import sqrt
@@ -223,6 +224,36 @@ def parse(text: str) -> Sketch:
     return Sketch(version, arch, int(cardinality), int(body, 16))
 
 
+def unpack(sketch: Sketch) -> numpy.ndarray:
+    raw = numpy.frombuffer(sketch.slots.to_bytes(SKETCH_BYTES, "big"), dtype=numpy.uint8)
+    columns = [
+        (raw >> numpy.uint8(8 - SLOT_BITS * (place + 1))) & numpy.uint8(MASK)
+        for place in range(8 // SLOT_BITS)
+    ]
+    return numpy.stack(columns, axis=1).reshape(-1)
+
+
+def unpack_all(sketches: Sequence[Sketch]) -> numpy.ndarray:
+    if not sketches:
+        return numpy.empty((0, PERMUTATIONS), dtype=numpy.uint8)
+    return numpy.stack([unpack(sketch) for sketch in sketches])
+
+
+def _agreement(rows: numpy.ndarray, one: numpy.ndarray) -> numpy.ndarray:
+    matched: numpy.ndarray = numpy.count_nonzero(rows == one, axis=1)
+    return matched / PERMUTATIONS
+
+
+def _jaccard(agreed: numpy.ndarray) -> numpy.ndarray:
+    # Two unrelated sets already agree on one slot in four, so chance agreement comes off.
+    return numpy.maximum(0.0, (agreed - FLOOR) / (1 - FLOOR))
+
+
+def similarities(rows: numpy.ndarray, one: numpy.ndarray) -> numpy.ndarray:
+    # One sketch against many, so N digests unpack N times and score in one pass.
+    return _jaccard(_agreement(rows, one)) * 100.0
+
+
 def compare(left: Sketch | str, right: Sketch | str) -> Scores:
     first = parse(left) if isinstance(left, str) else left
     second = parse(right) if isinstance(right, str) else right
@@ -232,16 +263,14 @@ def compare(left: Sketch | str, right: Sketch | str) -> Scores:
     if first.arch != second.arch:
         raise DigestError(f"architectures differ: {first.arch} and {second.arch}")
 
-    matches = sum(1 for i in range(PERMUTATIONS) if first.slot(i) == second.slot(i))
-    observed = matches / PERMUTATIONS
-
-    # Two unrelated sets already agree on one slot in four, so chance agreement comes off.
-    jaccard = max(0.0, (observed - FLOOR) / (1 - FLOOR))
+    agreed = _agreement(unpack(first).reshape(1, -1), unpack(second))
+    observed = float(agreed[0])
+    overlap = float(_jaccard(agreed)[0])
     uncertainty = sqrt(observed * (1 - observed) / PERMUTATIONS) / (1 - FLOOR) * 100
 
-    left_in_right, right_in_left = _containment(jaccard, first.cardinality, second.cardinality)
+    left_in_right, right_in_left = _containment(overlap, first.cardinality, second.cardinality)
     return Scores(
-        similarity=jaccard * 100,
+        similarity=overlap * 100,
         uncertainty=uncertainty,
         left_in_right=left_in_right,
         right_in_left=right_in_left,

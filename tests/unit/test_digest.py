@@ -299,6 +299,54 @@ def test_comparison_accepts_parsed_sketches() -> None:
     assert digest.compare(sketch_of(text), sketch_of(text)).similarity == pytest.approx(100.0)
 
 
+# ---- many at once -----------------------------------------------------------
+
+
+def group_of(count: int) -> list[digest.Sketch]:
+    built = []
+    for seed in range(count):
+        text = digest.digest((tuple(varied(300, seed=seed)),), "x86-64")
+        assert text is not None
+        built.append(sketch_of(text))
+    return built
+
+
+def test_unpacking_recovers_every_slot() -> None:
+    sketch = group_of(1)[0]
+    slots = digest.unpack(sketch)
+    assert len(slots) == digest.PERMUTATIONS
+    assert [int(value) for value in slots] == [
+        sketch.slot(index) for index in range(digest.PERMUTATIONS)
+    ]
+
+
+def test_unpacking_nothing_gives_an_empty_table() -> None:
+    assert digest.unpack_all([]).shape == (0, digest.PERMUTATIONS)
+
+
+def test_a_table_holds_one_row_per_sketch() -> None:
+    group = group_of(5)
+    table = digest.unpack_all(group)
+    assert table.shape == (5, digest.PERMUTATIONS)
+    assert list(table[3]) == list(digest.unpack(group[3]))
+
+
+# Both paths apply the same chance floor, so any drift between them is a defect.
+def test_the_batch_path_equals_compare_on_every_pair() -> None:
+    group = group_of(12)
+    table = digest.unpack_all(group)
+    for left in group:
+        scored = digest.similarities(table, digest.unpack(left))
+        for index, right in enumerate(group):
+            assert float(scored[index]) == digest.compare(left, right).similarity
+
+
+def test_a_sketch_scores_full_against_itself_in_a_batch() -> None:
+    group = group_of(3)
+    scored = digest.similarities(digest.unpack_all(group), digest.unpack(group[0]))
+    assert float(scored[0]) == 100.0
+
+
 def test_differing_architectures_raise() -> None:
     left = digest.digest(straight(60), "x86")
     right = digest.digest(straight(60), "x86-64")
