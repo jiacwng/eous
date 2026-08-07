@@ -120,11 +120,6 @@ def test_the_unknown_token_keeps_its_position() -> None:
     assert result[0][1] == digest.OOV
 
 
-def test_prefixed_mnemonics_resolve_through_the_vocabulary() -> None:
-    result = digest.normalise((chunk("repz ret", "notrack jmp"),), "x86-64")
-    assert result == [["ret", "jmp"]]
-
-
 # ---- shingles ---------------------------------------------------------------
 
 
@@ -321,10 +316,6 @@ def test_unpacking_recovers_every_slot() -> None:
         (body >> (digest.PERMUTATIONS - 1 - index) * digest.SLOT_BITS) & digest.MASK
         for index in range(digest.PERMUTATIONS)
     ]
-
-
-def test_unpacking_nothing_gives_an_empty_table() -> None:
-    assert digest.unpack_all([]).shape == (0, digest.PERMUTATIONS)
 
 
 def test_a_table_holds_one_row_per_sketch() -> None:

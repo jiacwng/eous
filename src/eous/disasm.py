@@ -67,7 +67,6 @@ def sweep(
     max_stalls: int | None = None,
     padding_run: int = PADDING_RUN,
     minimum_run: int = 1,
-    entropy_threshold: float = ENTROPY_THRESHOLD,
 ) -> SweepResult:
     bitness = BITNESS.get(binary.arch)
     if bitness is None:
@@ -81,7 +80,7 @@ def sweep(
             reports.append(RegionReport(section.name, 0, EMPTY, 0, len(section.data)))
             continue
 
-        if section.entropy >= entropy_threshold:
+        if section.entropy >= ENTROPY_THRESHOLD:
             reports.append(RegionReport(section.name, 0, ENTROPY, 0, len(section.data)))
             continue
 

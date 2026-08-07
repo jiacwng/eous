@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-import math
 import struct
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import lief
 import numpy
@@ -41,20 +40,6 @@ PE_ARCHES = {"I386": "x86", "AMD64": "x86-64"}
 ELF_ARCHES = {"I386": "x86", "X86_64": "x86-64"}
 
 
-class ClrDirectory(Protocol):
-    @property
-    def rva(self) -> int: ...
-
-    @property
-    def size(self) -> int: ...
-
-
-class ClrSource(Protocol):
-    def data_directory(self, kind: Any) -> ClrDirectory | None: ...
-
-    def get_content_from_virtual_address(self, rva: int, size: int) -> Any: ...
-
-
 class LoaderError(Exception):
     pass
 
@@ -79,13 +64,8 @@ class Section:
 
     @property
     def entropy(self) -> float:
-        # Computed on first read and kept. A binary carries far more data than code, and
-        # entropy is consulted for the executable regions alone.
-        cached = self.__dict__.get("_entropy")
-        if cached is None:
-            cached = data_entropy(self.data)
-            object.__setattr__(self, "_entropy", cached)
-        return float(cached)
+        # Computed on read, since only the executable sections are ever asked.
+        return data_entropy(self.data)
 
 
 @dataclass(frozen=True)
@@ -104,27 +84,15 @@ class Binary:
         return tuple(sorted(executable, key=lambda s: s.virtual_address))
 
 
-def shannon(counts: Sequence[int]) -> float:
-    total = sum(counts)
-    if total == 0:
-        return 0.0
-
-    accumulated = 0.0
-    for count in counts:
-        if count:
-            share = count / total
-            accumulated -= share * math.log2(share)
-    return accumulated
-
-
 def data_entropy(data: bytes) -> float:
     if not data:
         return 0.0
     counts = numpy.bincount(numpy.frombuffer(data, dtype=numpy.uint8), minlength=256)
-    return round(shannon(counts.tolist()), ENTROPY_DECIMALS)
+    share = counts[counts > 0] / len(data)
+    return round(float(-numpy.sum(share * numpy.log2(share))), ENTROPY_DECIMALS)
 
 
-def read_clr(binary: ClrSource) -> tuple[bool, bool]:
+def read_clr(binary: Any) -> tuple[bool, bool]:
     directory = binary.data_directory(CLR_DIRECTORY_KEY)
     if directory is None or directory.size == 0:
         return (False, False)

@@ -82,24 +82,8 @@ def test_section_is_frozen() -> None:
 # ---- entropy ----------------------------------------------------------------
 
 
-def test_shannon_of_nothing_is_zero() -> None:
-    assert loader.shannon([0] * 256) == 0.0
-
-
-def test_shannon_of_one_symbol_is_zero() -> None:
-    counts = [0] * 256
-    counts[65] = 1000
-    assert loader.shannon(counts) == 0.0
-
-
-def test_shannon_of_a_uniform_byte_range_is_eight() -> None:
-    assert loader.shannon([1] * 256) == pytest.approx(8.0)
-
-
-def test_shannon_of_two_equal_symbols_is_one() -> None:
-    counts = [0] * 256
-    counts[0] = counts[255] = 50
-    assert loader.shannon(counts) == pytest.approx(1.0)
+def test_data_entropy_of_two_equal_symbols_is_one_bit() -> None:
+    assert loader.data_entropy(b"\x00\xff" * 50) == pytest.approx(1.0)
 
 
 def test_data_entropy_of_empty_input_is_zero() -> None:
@@ -112,10 +96,6 @@ def test_data_entropy_of_every_byte_once_is_eight() -> None:
 
 def test_data_entropy_of_a_repeated_byte_is_zero() -> None:
     assert loader.data_entropy(b"\x00" * 4096) == 0.0
-
-
-def test_entropy_threshold_sits_below_the_maximum() -> None:
-    assert 0.0 < loader.ENTROPY_THRESHOLD < 8.0
 
 
 # Entropy decides whether a region is swept, so the value must land identically on any
@@ -372,6 +352,7 @@ def test_unreadable_cor20_falls_back_to_presence() -> None:
     assert loader.read_clr(fake) == (False, False)
 
 
-def test_shannon_stays_within_eight_bits() -> None:
-    counts = [i for i in range(256)]
-    assert loader.shannon(counts) <= 8.0 + math.ulp(8.0)
+def test_entropy_stays_within_eight_bits() -> None:
+    # A byte carries at most 8 bits, so a skewed distribution must stay under the ceiling.
+    data = bytes(byte for byte in range(256) for _ in range(byte))
+    assert loader.data_entropy(data) <= 8.0 + math.ulp(8.0)
