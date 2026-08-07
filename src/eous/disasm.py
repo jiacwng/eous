@@ -7,15 +7,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs
+from iced_x86 import Decoder, FlowControl, Mnemonic
 
 from eous.loader import ENTROPY_THRESHOLD, Binary
 
-WINDOW_BYTES = 65_536
 PADDING_RUN = 8
-
-# Section addresses are attacker-controlled, and one near 2**64 wraps the decoder.
-ADDRESS_MASK = (1 << 64) - 1
 
 # `add` belongs here because a run of zero bytes decodes as `add [eax], al`.
 PADDING_MNEMONICS = frozenset({"nop", "int3", "add"})
@@ -25,28 +21,15 @@ EMPTY = "EMPTY"
 BUDGET = "BUDGET"
 STALLED = "STALLED"
 
-MODES = {"x86": CS_MODE_32, "x86-64": CS_MODE_64}
+BITNESS = {"x86": 32, "x86-64": 64}
 
-# fmt: off
-_CONDITIONS = (
-    "a", "ae", "b", "be", "c", "e", "g", "ge", "l", "le", "na", "nae", "nb", "nbe", "nc",
-    "ne", "ng", "nge", "nl", "nle", "no", "np", "ns", "nz", "o", "p", "pe", "po", "s", "z",
-)
+CONTINUES = frozenset({FlowControl.NEXT, FlowControl.INTERRUPT})
 
-# `call` belongs here because the callee runs in between, so the executed stream separates
-# a call from the address following it.
-TERMINATORS = frozenset(
-    {
-        "jmp", "ljmp", "call", "lcall",
-        "ret", "retf", "retfq", "iret", "iretd", "iretq",
-        "hlt", "ud0", "ud1", "ud2",
-        "syscall", "sysenter", "sysexit", "sysret",
-        "loop", "loope", "loopne", "loopnz", "loopz",
-        "jcxz", "jecxz", "jrcxz",
-    }
-    | {f"j{condition}" for condition in _CONDITIONS}
-)
-# fmt: on
+MNEMONICS = {
+    value: name.lower()
+    for name, value in vars(Mnemonic).items()
+    if name.isupper() and isinstance(value, int)
+}
 
 
 class DisasmError(Exception):
@@ -82,12 +65,11 @@ def sweep(
     *,
     max_instructions: int | None = None,
     max_stalls: int | None = None,
-    window_bytes: int = WINDOW_BYTES,
     padding_run: int = PADDING_RUN,
     entropy_threshold: float = ENTROPY_THRESHOLD,
 ) -> SweepResult:
-    mode = MODES.get(binary.arch)
-    if mode is None:
+    bitness = BITNESS.get(binary.arch)
+    if bitness is None:
         raise DisasmError(f"no decoder for architecture {binary.arch}")
 
     chunks: list[tuple[str, ...]] = []
@@ -104,12 +86,10 @@ def sweep(
 
         region_chunks, report = _sweep_region(
             data=section.data,
-            base=section.virtual_address,
             name=section.name,
-            mode=mode,
+            bitness=bitness,
             max_instructions=max_instructions,
             max_stalls=max_stalls,
-            window_bytes=window_bytes,
             padding_run=padding_run,
         )
         chunks.extend(region_chunks)
@@ -124,23 +104,19 @@ def sweep(
 
 def _sweep_region(
     data: bytes,
-    base: int,
     name: str,
-    mode: int,
+    bitness: int,
     max_instructions: int | None,
     max_stalls: int | None,
-    window_bytes: int,
     padding_run: int,
 ) -> tuple[list[tuple[str, ...]], RegionReport]:
-    decoder = Cs(CS_ARCH_X86, mode)
-    decoder.detail = False
 
+    decoder = Decoder(bitness, data)
     budget = len(data) if max_instructions is None else max_instructions
     ceiling = len(data) if max_stalls is None else max_stalls
 
     chunks: list[tuple[str, ...]] = []
     current: list[str] = []
-    offset = 0
     decoded = 0
     stalls = 0
     skipped: str | None = None
@@ -150,7 +126,7 @@ def _sweep_region(
             chunks.append(tuple(_collapse_padding(current, padding_run)))
             current.clear()
 
-    while offset < len(data):
+    while decoder.can_decode:
         if decoded >= budget:
             skipped = BUDGET
             break
@@ -158,34 +134,21 @@ def _sweep_region(
             skipped = STALLED
             break
 
-        window = data[offset : offset + window_bytes]
-        advanced = False
+        position = decoder.position
+        instruction = decoder.decode()
 
-        # disasm_lite yields plain tuples. The object form builds a ctypes-backed
-        # instruction per decode, and only the mnemonic and the size are read here.
-        for _, size, mnemonic, _ in decoder.disasm_lite(window, (base + offset) & ADDRESS_MASK):
-            next_offset = offset + size
-
-            current.append(mnemonic)
-            decoded += 1
-            offset = next_offset
-            advanced = True
-
-            # Capstone prints prefixes ahead of the mnemonic, so `repz ret` reaches the
-            # set through its final token. The space check comes first.
-            if mnemonic in TERMINATORS or (
-                " " in mnemonic and mnemonic.rsplit(" ", 1)[-1] in TERMINATORS
-            ):
-                close_chunk()
-            if decoded >= budget:
-                break
-
-        # Capstone halts at the first undecodable byte, so zero instructions means the
-        # byte at `offset` is junk.
-        if not advanced:
+        if instruction.is_invalid:
+            # Resume one byte on, so an undecodable byte costs exactly one byte.
+            decoder.position = position + 1
             close_chunk()
             stalls += 1
-            offset += 1
+            continue
+
+        current.append(MNEMONICS[instruction.mnemonic])
+        decoded += 1
+
+        if instruction.flow_control not in CONTINUES:
+            close_chunk()
 
     close_chunk()
     return chunks, RegionReport(
