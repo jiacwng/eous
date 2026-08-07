@@ -66,6 +66,7 @@ def sweep(
     max_instructions: int | None = None,
     max_stalls: int | None = None,
     padding_run: int = PADDING_RUN,
+    minimum_run: int = 1,
     entropy_threshold: float = ENTROPY_THRESHOLD,
 ) -> SweepResult:
     bitness = BITNESS.get(binary.arch)
@@ -91,6 +92,7 @@ def sweep(
             max_instructions=max_instructions,
             max_stalls=max_stalls,
             padding_run=padding_run,
+            minimum_run=minimum_run,
         )
         chunks.extend(region_chunks)
         reports.append(report)
@@ -109,6 +111,7 @@ def _sweep_region(
     max_instructions: int | None,
     max_stalls: int | None,
     padding_run: int,
+    minimum_run: int,
 ) -> tuple[list[tuple[str, ...]], RegionReport]:
 
     decoder = Decoder(bitness, data)
@@ -123,7 +126,9 @@ def _sweep_region(
 
     def close_chunk() -> None:
         if current:
-            chunks.append(tuple(_collapse_padding(current, padding_run)))
+            collapsed = _collapse_padding(current, padding_run)
+            if len(collapsed) >= minimum_run:
+                chunks.append(tuple(collapsed))
             current.clear()
 
     while decoder.can_decode:
