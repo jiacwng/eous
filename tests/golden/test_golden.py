@@ -87,8 +87,7 @@ def test_a_changed_parameter_breaks_the_vector(
     assert digest.digest(chunks, case["arch"]) != case["digest"]
 
 
-# `pack` walks COEFFICIENTS while `Sketch.slot` indexes by PERMUTATIONS, so the two
-# drifting apart would pack one length and read back another.
+# pack writes one slot per coefficient and unpack reads PERMUTATIONS of them.
 def test_the_permutation_count_matches_its_table() -> None:
     assert len(digest.COEFFICIENTS) == digest.PERMUTATIONS
 

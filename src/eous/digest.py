@@ -1,7 +1,6 @@
 # Turns chunks of mnemonics into an EO1 digest, and scores digests against each other.
 #
-# A digest reads EO1:arch:cardinality:sketch. Changing any constant below changes every
-# digest, so the version string changes with them.
+# A digest reads EO1:arch:cardinality:sketch. Changing any constant below changes every digest.
 
 from __future__ import annotations
 
@@ -20,8 +19,6 @@ VERSION = "EO1"
 
 NGRAM = 6
 
-# At a fixed 512-bit sketch, permutations trade against bits per slot. Two bits minimises
-# worst-case standard error: 4.17 points, against 4.42 at one bit and 4.71 at four.
 PERMUTATIONS = 256
 SLOT_BITS = 2
 
@@ -68,13 +65,11 @@ def _derive_permutations() -> tuple[tuple[int, int], ...]:
 
 COEFFICIENTS = _derive_permutations()
 
-# Each permutation computes (multiplier(a) * hash(from BLAKE2b) + offset(b)) % MODULUS, the
-# biggest Mersenne prime holding in 64 bits. That product reaches 122 bits while numpy holds
-# 64, and an overflow here wraps in silence and yields a wrong digest. So both numbers get cut
-# in half and multiplied, and this way we hold everything under 64 bits.
+# Hashes are permuted in batches, so memory stays near 8 MB however many shingles there are.
 BLOCK = 4096
 
 
+# multiplier * hash needs 122 bits and numpy holds 64, so each number is multiplied in halves.
 @dataclass(frozen=True, eq=False)
 class _Table:
     upper: numpy.ndarray
@@ -142,10 +137,6 @@ class Sketch:
     arch: str
     cardinality: int
     slots: int
-
-    def slot(self, index: int) -> int:
-        shift = (PERMUTATIONS - 1 - index) * SLOT_BITS
-        return (self.slots >> shift) & MASK
 
     def render(self) -> str:
         body = self.slots.to_bytes(SKETCH_BYTES, "big").hex()

@@ -315,8 +315,11 @@ def test_unpacking_recovers_every_slot() -> None:
     sketch = group_of(1)[0]
     slots = digest.unpack(sketch)
     assert len(slots) == digest.PERMUTATIONS
+    # Read the bits back off the printed digest, so the check uses the published format.
+    body = int(sketch.render().rsplit(":", 1)[-1], 16)
     assert [int(value) for value in slots] == [
-        sketch.slot(index) for index in range(digest.PERMUTATIONS)
+        (body >> (digest.PERMUTATIONS - 1 - index) * digest.SLOT_BITS) & digest.MASK
+        for index in range(digest.PERMUTATIONS)
     ]
 
 
