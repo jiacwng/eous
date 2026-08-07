@@ -5,7 +5,7 @@ updates:
     schedule:
       interval: weekly
 
-  # capstone, lief and numpy stay ungrouped: a decoder bump moves every digest.
+  # iced-x86, lief and numpy stay ungrouped: a decoder bump moves every digest.
   - package-ecosystem: pip
     directory: "/"
     schedule:

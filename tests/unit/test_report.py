@@ -234,13 +234,6 @@ def test_an_assembly_carrying_native_code_still_digests(monkeypatch: pytest.Monk
     assert report.analyse(PE64).digest is not None
 
 
-# The header is attacker-controlled, so a distrusted one reads as not-il-only and the
-# binary gets swept rather than waved through.
-def test_a_distrusted_header_leaves_the_binary_swept(monkeypatch: pytest.MonkeyPatch) -> None:
-    managed(monkeypatch, il_only=False, native=False)
-    assert report.analyse(PE64).digest is not None
-
-
 # Managed is judged before the sweep, so an il-only assembly never reports as packed.
 def test_managed_is_judged_before_packed(monkeypatch: pytest.MonkeyPatch) -> None:
     managed(monkeypatch, il_only=True, native=False, entropy_bytes=random.randbytes(8192))

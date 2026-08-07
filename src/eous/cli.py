@@ -171,8 +171,7 @@ def _run_compare(args: argparse.Namespace) -> int:
     resolved: list[str] = []
     labels: list[str] = []
     for text, side in ((args.left, "left"), (args.right, "right")):
-        # A path that exists is a file; anything else is read as a digest string. The
-        # filesystem answers first, so a mistyped path reports as absent.
+        # A path that exists is a file; anything else is read as a digest string.
         path = Path(text)
         if not path.is_file():
             resolved.append(text)

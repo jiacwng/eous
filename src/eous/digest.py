@@ -227,8 +227,6 @@ def unpack(sketch: Sketch) -> numpy.ndarray:
 
 
 def unpack_all(sketches: Sequence[Sketch]) -> numpy.ndarray:
-    if not sketches:
-        return numpy.empty((0, PERMUTATIONS), dtype=numpy.uint8)
     return numpy.stack([unpack(sketch) for sketch in sketches])
 
 

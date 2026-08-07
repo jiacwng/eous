@@ -13,10 +13,6 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 CLEAN = FIXTURES / "fixture-pe-x64.exe"
 
 
-def run(*args: str) -> tuple[int, str, str]:
-    return cli.main(list(args)), "", ""
-
-
 @pytest.fixture
 def output(capsys: pytest.CaptureFixture[str]) -> pytest.CaptureFixture[str]:
     return capsys

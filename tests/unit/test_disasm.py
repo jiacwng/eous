@@ -201,15 +201,19 @@ def test_a_high_entropy_region_is_skipped_by_name() -> None:
     assert result.reports[0].skipped == disasm.ENTROPY
 
 
-def test_a_region_exactly_at_the_threshold_is_skipped() -> None:
-    edge = section(XOR_EAX * 50)
-    result = disasm.sweep(binary(edge), entropy_threshold=edge.entropy)
+# 128 equally frequent bytes carry exactly log2(128) = 7.0 bits, which is the threshold, so
+# these two pin that the comparison includes its boundary.
+def test_a_section_exactly_at_the_threshold_is_skipped() -> None:
+    edge = section(bytes(range(128)) * 64)
+    assert edge.entropy == loader.ENTROPY_THRESHOLD
+    result = disasm.sweep(binary(edge))
     assert result.reports[0].skipped == disasm.ENTROPY
 
 
-def test_a_region_just_under_the_threshold_is_swept() -> None:
-    edge = section(XOR_EAX * 50 + RET)
-    result = disasm.sweep(binary(edge), entropy_threshold=edge.entropy + 0.000001)
+def test_a_section_just_under_the_threshold_is_disassembled() -> None:
+    edge = section(bytes(range(127)) * 64)
+    assert edge.entropy < loader.ENTROPY_THRESHOLD
+    result = disasm.sweep(binary(edge))
     assert result.reports[0].skipped is None
 
 
