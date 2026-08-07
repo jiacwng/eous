@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from eous import disasm, loader
+from eous.digest import NGRAM
 from eous.digest import digest as build_digest
 
 UNREADABLE = "unreadable"
@@ -58,7 +59,9 @@ def analyse(path: Path) -> Analysis:
     if writable is not None:
         return _refuse(path, PACKED, f"executable section {writable} is writable")
 
-    sweep = disasm.sweep(binary)
+    # A run shorter than one shingle contributes nothing, and a section of 0xC3 is one `ret`
+    # per byte: keeping those cost 72 bytes of memory for every input byte.
+    sweep = disasm.sweep(binary, minimum_run=NGRAM)
     if sweep.compressed_share >= PACKED_SHARE:
         share = f"{sweep.compressed_share:.0%} of executable code is compressed"
         return _refuse(path, PACKED, share)
