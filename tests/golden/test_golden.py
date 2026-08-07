@@ -20,7 +20,7 @@ IDS = [entry["name"] for entry in FILES]
 def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> None:
     path = FIXTURES / str(entry["name"])
     binary = loader.load(path)
-    produced = digest.digest(disasm.sweep(binary).chunks, binary.arch)
+    produced = digest.digest(disasm.sweep(binary).chunks, binary.target)
     assert produced == entry["digest"]
 
 
@@ -48,7 +48,7 @@ def test_a_fixture_is_the_file_the_vector_was_taken_from(entry: dict[str, object
 def test_the_stages_before_the_digest_stay_put(entry: dict[str, object]) -> None:
     binary = loader.load(FIXTURES / str(entry["name"]))
     sweep = disasm.sweep(binary)
-    assert binary.arch == entry["arch"]
+    assert binary.target == entry["target"]
     assert sweep.total_decoded == entry["decoded"]
     assert len(sweep.chunks) == entry["chunks"]
 
@@ -57,7 +57,7 @@ def test_the_stages_before_the_digest_stay_put(entry: dict[str, object]) -> None
 def test_the_synthetic_case_reproduces() -> None:
     case = VECTORS["synthetic"]
     chunks = tuple(tuple(chunk) for chunk in case["chunks"])
-    assert digest.digest(chunks, case["arch"]) == case["digest"]
+    assert digest.digest(chunks, case["target"]) == case["digest"]
 
 
 # A digest is only reproducible under the decoder that produced it.
@@ -96,7 +96,7 @@ def test_a_changed_parameter_breaks_the_vector(
     case = VECTORS["synthetic"]
     chunks = tuple(tuple(chunk) for chunk in case["chunks"])
     monkeypatch.setattr(digest, attribute, value)
-    assert digest.digest(chunks, case["arch"]) != case["digest"]
+    assert digest.digest(chunks, case["target"]) != case["digest"]
 
 
 # pack writes one slot per coefficient and unpack reads PERMUTATIONS of them.
@@ -108,11 +108,11 @@ def test_a_changed_separator_breaks_the_vector(monkeypatch: pytest.MonkeyPatch) 
     case = VECTORS["synthetic"]
     chunks = tuple(tuple(chunk) for chunk in case["chunks"])
     monkeypatch.setattr(digest, "SEPARATOR", b"\x00")
-    assert digest.digest(chunks, case["arch"]) != case["digest"]
+    assert digest.digest(chunks, case["target"]) != case["digest"]
 
 
 def test_a_changed_personalisation_breaks_the_vector(monkeypatch: pytest.MonkeyPatch) -> None:
     case = VECTORS["synthetic"]
     chunks = tuple(tuple(chunk) for chunk in case["chunks"])
     monkeypatch.setattr(digest, "SHINGLE_PERSON", b"eous-xx")
-    assert digest.digest(chunks, case["arch"]) != case["digest"]
+    assert digest.digest(chunks, case["target"]) != case["digest"]

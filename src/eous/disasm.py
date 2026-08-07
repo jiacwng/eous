@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from iced_x86 import Decoder, FlowControl, Mnemonic
 
-from eous.loader import ENTROPY_THRESHOLD, Binary
+from eous.loader import BITS, ENTROPY_THRESHOLD, Binary
 
 PADDING_RUN = 8
 
@@ -20,8 +20,6 @@ ENTROPY = "ENTROPY"
 EMPTY = "EMPTY"
 BUDGET = "BUDGET"
 STALLED = "STALLED"
-
-BITNESS = {"x86": 32, "x86-64": 64}
 
 CONTINUES = frozenset({FlowControl.NEXT, FlowControl.INTERRUPT})
 
@@ -68,7 +66,7 @@ def sweep(
     padding_run: int = PADDING_RUN,
     minimum_run: int = 1,
 ) -> SweepResult:
-    bitness = BITNESS.get(binary.arch)
+    bitness = BITS.get(binary.arch)
     if bitness is None:
         raise DisasmError(f"no decoder for architecture {binary.arch}")
 

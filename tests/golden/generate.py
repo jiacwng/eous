@@ -24,7 +24,7 @@ SYNTHETIC_CHUNKS = (
     ("mov", "test", "je", "lea", "mov", "call", "mov", "ret"),
     ("xor", "inc", "cmp", "jne", "mov", "shl", "or", "and", "not", "ret"),
 )
-SYNTHETIC_ARCH = "x86-64"
+SYNTHETIC_TARGET = "pe64"
 
 
 def build() -> dict[str, object]:
@@ -37,10 +37,10 @@ def build() -> dict[str, object]:
             {
                 "name": path.name,
                 "sha256": hashlib.sha256(raw).hexdigest(),
-                "arch": binary.arch,
+                "target": binary.target,
                 "decoded": sweep.total_decoded,
                 "chunks": len(sweep.chunks),
-                "digest": digest.digest(sweep.chunks, binary.arch),
+                "digest": digest.digest(sweep.chunks, binary.target),
             }
         )
 
@@ -52,9 +52,9 @@ def build() -> dict[str, object]:
         "engines": toolchain.engines(),
         "files": files,
         "synthetic": {
-            "arch": SYNTHETIC_ARCH,
+            "target": SYNTHETIC_TARGET,
             "chunks": [list(chunk) for chunk in SYNTHETIC_CHUNKS],
-            "digest": digest.digest(SYNTHETIC_CHUNKS, SYNTHETIC_ARCH),
+            "digest": digest.digest(SYNTHETIC_CHUNKS, SYNTHETIC_TARGET),
         },
     }
 

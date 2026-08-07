@@ -11,6 +11,8 @@ from eous import cli, report
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 CLEAN = FIXTURES / "fixture-pe-x64.exe"
+PE32 = FIXTURES / "fixture-pe-x86.exe"
+ELF64 = FIXTURES / "fixture-elf-x64"
 
 
 @pytest.fixture
@@ -332,7 +334,7 @@ def test_help_explains_the_digest_format(output: pytest.CaptureFixture[str]) -> 
     text = cli.build_parser().format_help()
     assert "EO1:" in text
     assert "the format version" in text
-    assert "the architecture" in text
+    assert "the target" in text
 
 
 def test_help_lists_every_exit_code(output: pytest.CaptureFixture[str]) -> None:
@@ -360,8 +362,6 @@ def test_the_hash_command_has_its_own_help() -> None:
 
 # ---- compare ----------------------------------------------------------------
 
-ELF64 = FIXTURES / "fixture-elf-x64"
-
 
 def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["compare", str(CLEAN), str(CLEAN)]) == cli.OK
@@ -383,12 +383,12 @@ def test_comparison_prints_the_margin_of_error_and_its_range(
     "args",
     [
         ["compare", str(CLEAN), str(CLEAN)],
-        ["compare", str(CLEAN), str(ELF64)],
+        ["match", str(CLEAN), "--help"],
         ["hash", str(CLEAN)],
         ["--help"],
         ["compare", "--help"],
     ],
-    ids=["compare_same", "compare_withheld", "hash", "help", "compare_help"],
+    ids=["compare_same", "match_help", "hash", "help", "compare_help"],
 )
 def test_every_line_of_output_is_ascii(args: list[str], output: pytest.CaptureFixture[str]) -> None:
     cli.main(args)
@@ -398,13 +398,15 @@ def test_every_line_of_output_is_ascii(args: list[str], output: pytest.CaptureFi
 
 def test_two_digest_strings_compare(output: pytest.CaptureFixture[str]) -> None:
     first = report.analyse(CLEAN).digest
-    second = report.analyse(ELF64).digest
+    assert first is not None
+    second = first[:-1] + ("0" if first[-1] != "0" else "1")
     assert cli.main(["compare", first, second]) == cli.OK
     assert "similarity:" in output.readouterr().out
 
 
 def test_a_file_compares_against_a_digest(output: pytest.CaptureFixture[str]) -> None:
-    text = report.analyse(ELF64).digest
+    text = report.analyse(CLEAN).digest
+    assert text is not None
     assert cli.main(["compare", str(CLEAN), text]) == cli.OK
 
 
@@ -426,15 +428,20 @@ def test_a_refused_file_stops_the_comparison(
     assert captured.out == ""
 
 
-def test_differing_architectures_are_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
-    x64 = report.analyse(CLEAN).digest
-    x86 = report.analyse(FIXTURES / "fixture-pe-x86.exe").digest
-    assert cli.main(["compare", x64, x86]) == cli.USAGE
-    assert "architectures differ" in output.readouterr().err
+def test_differing_targets_are_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
+    wide = report.analyse(CLEAN).digest
+    narrow = report.analyse(FIXTURES / "fixture-pe-x86.exe").digest
+    assert cli.main(["compare", wide, narrow]) == cli.USAGE
+    assert "different targets" in output.readouterr().err
+
+
+def test_a_windows_binary_refuses_against_a_linux_one(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["compare", str(CLEAN), str(ELF64)]) == cli.USAGE
+    assert "different targets" in output.readouterr().err
 
 
 def test_a_malformed_digest_is_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["compare", "EO1:x86:notanumber:ab", str(CLEAN)]) == cli.USAGE
+    assert cli.main(["compare", "EO1:pe64:notanumber:ab", str(CLEAN)]) == cli.USAGE
 
 
 def test_compare_needs_two_inputs(output: pytest.CaptureFixture[str]) -> None:
@@ -454,7 +461,8 @@ def test_compare_json_carries_the_range(output: pytest.CaptureFixture[str]) -> N
 
 
 def test_withheld_containment_says_why(output: pytest.CaptureFixture[str]) -> None:
-    cli.main(["compare", str(CLEAN), str(ELF64)])
+    body = "0" * 128
+    cli.main(["compare", f"EO1:pe64:10:{body}", f"EO1:pe64:1000:{body}"])
     assert "n/a" in output.readouterr().out
 
 
@@ -570,3 +578,139 @@ def test_a_file_name_cannot_forge_a_digest_line(
     lines = [line for line in output.readouterr().out.splitlines() if line]
     assert len(lines) == 2, "the newline in the name opened a third record"
     assert r"\x0a" in lines[0]
+
+
+# ---- match ------------------------------------------------------------------
+
+
+def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:
+    target = tmp_path / "known.txt"
+    lines = []
+    for path in paths:
+        text = report.analyse(path).digest
+        lines.append(f"{path}  {text}" if labelled else str(text))
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
+def test_match_ranks_the_closest_first(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    # Two comparable entries, so the order is something this test can be wrong about.
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    weaker = text[:-32] + "0" * 32
+
+    known = known_file(tmp_path, CLEAN, ELF64)
+    with known.open("a", encoding="utf-8") as handle:
+        handle.write(f"weaker  {weaker}\n")
+
+    assert cli.main(["match", str(CLEAN), str(known)]) == cli.OK
+    lines = [line for line in output.readouterr().out.splitlines() if line]
+    assert len(lines) == 2
+    assert lines[0].startswith("100.0%")
+    assert str(CLEAN) in lines[0]
+    assert "weaker" in lines[1]
+
+
+def test_match_reads_the_bare_digest_form_hash_writes(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, labelled=False)
+    assert cli.main(["match", str(CLEAN), str(known)]) == cli.OK
+    assert output.readouterr().out.splitlines()[0].startswith("100.0%")
+
+
+# A corpus file holds every target, and only one of them can be compared against.
+def test_match_skips_entries_built_for_another_target(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, PE32, ELF64)
+    assert cli.main(["match", str(CLEAN), str(known)]) == cli.OK
+    captured = output.readouterr()
+    assert len([line for line in captured.out.splitlines() if line]) == 1
+    assert "2 built for another target" in captured.err
+
+
+def test_match_is_a_usage_error_when_nothing_shares_the_target(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE32, ELF64)
+    assert cli.main(["match", str(CLEAN), str(known)]) == cli.USAGE
+    captured = output.readouterr()
+    assert captured.out == ""
+    assert "holds no pe64 digest" in captured.err
+
+
+def test_match_limits_the_list(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    known = known_file(tmp_path, CLEAN, CLEAN, CLEAN)
+    assert cli.main(["match", str(CLEAN), str(known), "--top", "2"]) == cli.OK
+    assert len([line for line in output.readouterr().out.splitlines() if line]) == 2
+
+
+def test_match_skips_a_line_that_is_not_a_digest(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN)
+    known.write_text(known.read_text(encoding="utf-8") + "notes.txt  not-a-digest\n\n", "utf-8")
+    assert cli.main(["match", str(CLEAN), str(known)]) == cli.OK
+    captured = output.readouterr()
+    assert len([line for line in captured.out.splitlines() if line]) == 1
+    assert "1 lines held no digest" in captured.err
+
+
+def test_match_takes_a_digest_string_as_the_query(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    text = report.analyse(CLEAN).digest
+    known = known_file(tmp_path, CLEAN)
+    assert cli.main(["match", str(text), str(known)]) == cli.OK
+    assert output.readouterr().out.splitlines()[0].startswith("100.0%")
+
+
+def test_match_refuses_a_query_it_cannot_digest(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    junk = tmp_path / "junk.bin"
+    junk.write_bytes(b"plain text, forever" * 20)
+    known = known_file(tmp_path, CLEAN)
+    assert cli.main(["match", str(junk), str(known)]) == cli.REFUSED
+    assert "unreadable" in output.readouterr().err
+
+
+def test_match_refuses_a_digests_file_it_cannot_read(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    absent = tmp_path / "absent.txt"
+    assert cli.main(["match", str(CLEAN), str(absent)]) == cli.REFUSED
+    printed = output.readouterr().err
+    assert str(absent) in printed
+    assert "No such file" in printed
+
+
+def test_match_json_carries_the_target_and_the_ranking(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, ELF64)
+    assert cli.main(["match", str(CLEAN), str(known), "--json"]) == cli.OK
+    payload = json.loads(output.readouterr().out)
+    assert payload["target"] == "pe64"
+    assert payload["other_target"] == 1
+    assert payload["matches"][0]["uncertainty"] == pytest.approx(0.0)
+    assert payload["matches"][0]["similarity"] == pytest.approx(100.0)
+
+
+def test_match_escapes_a_hostile_label(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    text = report.analyse(CLEAN).digest
+    known = tmp_path / "known.txt"
+    known.write_text(f"a\x1b[2Kb  {text}\n", encoding="utf-8")
+    assert cli.main(["match", str(CLEAN), str(known)]) == cli.OK
+    printed = output.readouterr().out
+    assert "\x1b" not in printed
+    assert r"\x1b" in printed
+
+
+def test_a_negative_top_is_a_usage_error(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, CLEAN)
+    assert cli.main(["match", str(CLEAN), str(known), "--top", "-1"]) == cli.USAGE
+    assert "--top" in output.readouterr().err

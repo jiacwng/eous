@@ -20,7 +20,7 @@ lief.logging.disable()
 # 7.0 catches 44.1% of packed files, against 41.7% at 7.2, with the same 0.1% false alarms.
 ENTROPY_THRESHOLD = 7.0
 
-# Rounding holds the swept-or-skipped decision steady across platform maths libraries.
+# Rounding holds the decision to disassemble steady across platform maths libraries.
 ENTROPY_DECIMALS = 6
 
 PE_SECTION_EXECUTE = 0x20000000
@@ -38,6 +38,8 @@ COR20_IL_ONLY = 0x1
 
 PE_ARCHES = {"I386": "x86", "AMD64": "x86-64"}
 ELF_ARCHES = {"I386": "x86", "X86_64": "x86-64"}
+
+BITS = {"x86": 32, "x86-64": 64}
 
 
 class LoaderError(Exception):
@@ -73,6 +75,9 @@ class Binary:
     path: Path
     format: str
     arch: str
+    # ELF names the width in EI_CLASS and PE in the optional header magic. The machine
+    # field names the instruction set, and the two disagree on the x32 ABI.
+    bits: int
     entry_point: int
     sections: tuple[Section, ...]
     is_il_only: bool
@@ -82,6 +87,10 @@ class Binary:
     def executable_sections(self) -> tuple[Section, ...]:
         executable = [s for s in self.sections if s.executable]
         return tuple(sorted(executable, key=lambda s: s.virtual_address))
+
+    @property
+    def target(self) -> str:
+        return f"{self.format}{self.bits}"
 
 
 def data_entropy(data: bytes) -> float:
@@ -167,6 +176,7 @@ def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
         path=path,
         format="pe",
         arch=arch,
+        bits=64 if parsed.optional_header.magic == lief.PE.PE_TYPE.PE32_PLUS else 32,
         entry_point=parsed.optional_header.addressof_entrypoint,
         sections=sections,
         is_il_only=is_il_only,
@@ -199,6 +209,7 @@ def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
         path=path,
         format="elf",
         arch=arch,
+        bits=64 if parsed.header.identity_class == lief.ELF.Header.CLASS.ELF64 else 32,
         entry_point=parsed.header.entrypoint,
         sections=sections,
         is_il_only=False,
