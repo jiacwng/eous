@@ -1,8 +1,6 @@
 # Maps a raw Capstone mnemonic to a semantic root.
 #
-# data/categories.json should be included in /src/eous/data with it.
-# Deriving it at import time from Capstone helpers would tie
-# every digest to whichever Capstone version happens to be installed.
+# The table ships as a data file, so a digest never depends on the installed decoder version.
 
 from __future__ import annotations
 

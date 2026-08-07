@@ -23,9 +23,6 @@ ENTROPY_THRESHOLD = 7.2
 # Rounding holds the swept-or-skipped decision steady across platform maths libraries.
 ENTROPY_DECIMALS = 6
 
-SUPPORTED_FORMATS = ("pe", "elf")
-SUPPORTED_ARCHES = ("x86", "x86-64")
-
 PE_SECTION_EXECUTE = 0x20000000
 PE_SECTION_WRITE = 0x80000000
 ELF_SECTION_EXECUTE = 0x4

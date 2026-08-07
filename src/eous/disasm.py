@@ -11,10 +11,6 @@ from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs
 
 from eous.loader import ENTROPY_THRESHOLD, Binary
 
-# Per region, so the digest stays independent of the order sections appear in the file.
-MAX_INSTRUCTIONS = 500_000
-
-MAX_STALLS = 20_000
 WINDOW_BYTES = 65_536
 PADDING_RUN = 8
 
@@ -74,8 +70,7 @@ class SweepResult:
 
     @property
     def compressed_share(self) -> float:
-        # Weighed by bytes, since a section holds at most log2(size) bits of entropy and a
-        # small one can never reach the threshold however random it is.
+        # Weighed by bytes, so a stub-sized section cannot outvote the real code.
         total = sum(r.size for r in self.reports)
         if not total:
             return 0.0
@@ -85,8 +80,8 @@ class SweepResult:
 def sweep(
     binary: Binary,
     *,
-    max_instructions: int = MAX_INSTRUCTIONS,
-    max_stalls: int = MAX_STALLS,
+    max_instructions: int | None = None,
+    max_stalls: int | None = None,
     window_bytes: int = WINDOW_BYTES,
     padding_run: int = PADDING_RUN,
     entropy_threshold: float = ENTROPY_THRESHOLD,
@@ -132,13 +127,16 @@ def _sweep_region(
     base: int,
     name: str,
     mode: int,
-    max_instructions: int,
-    max_stalls: int,
+    max_instructions: int | None,
+    max_stalls: int | None,
     window_bytes: int,
     padding_run: int,
 ) -> tuple[list[tuple[str, ...]], RegionReport]:
     decoder = Cs(CS_ARCH_X86, mode)
     decoder.detail = False
+
+    budget = len(data) if max_instructions is None else max_instructions
+    ceiling = len(data) if max_stalls is None else max_stalls
 
     chunks: list[tuple[str, ...]] = []
     current: list[str] = []
@@ -153,10 +151,10 @@ def _sweep_region(
             current.clear()
 
     while offset < len(data):
-        if decoded >= max_instructions:
+        if decoded >= budget:
             skipped = BUDGET
             break
-        if stalls >= max_stalls:
+        if stalls >= ceiling:
             skipped = STALLED
             break
 
@@ -179,7 +177,7 @@ def _sweep_region(
                 " " in mnemonic and mnemonic.rsplit(" ", 1)[-1] in TERMINATORS
             ):
                 close_chunk()
-            if decoded >= max_instructions:
+            if decoded >= budget:
                 break
 
         # Capstone halts at the first undecodable byte, so zero instructions means the

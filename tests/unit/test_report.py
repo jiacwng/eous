@@ -81,13 +81,6 @@ def test_other_architectures_refuse_by_arch_and_name_it(
     assert refusal.detail
 
 
-# The detail states the cause, so a reader learns what the file was without opening it.
-def test_a_refusal_detail_names_a_cause() -> None:
-    refusal = report.Refusal(report.UNSUPPORTED_ARCH, "aarch64")
-    assert refusal.gate in report.GATES
-    assert refusal.detail == "aarch64"
-
-
 def compressed_copy(
     source: Path, target: Path, *, seed: int = 0, regions: int | None = None
 ) -> Path:
@@ -210,11 +203,6 @@ def test_the_managed_gate_runs_no_sweep(monkeypatch: pytest.MonkeyPatch) -> None
     assert report.analyse(PE64).refusal.gate == report.MANAGED
 
 
-def test_the_packed_gate_is_declared_after_the_first_three() -> None:
-    assert report.GATES[3] == report.PACKED
-    assert report.PACKED not in report.GATES[:3]
-
-
 @pytest.mark.parametrize(
     ("name", "payload"),
     [
@@ -235,14 +223,6 @@ def test_a_refusal_detail_holds_the_cause_alone(
     assert detail
     assert str(tmp_path) not in detail
     assert name not in detail
-
-
-def test_the_gate_names_are_declared_in_order() -> None:
-    assert report.GATES[:3] == (
-        report.UNREADABLE,
-        report.UNSUPPORTED_FORMAT,
-        report.UNSUPPORTED_ARCH,
-    )
 
 
 # Format is decided before architecture, so a Mach-O file reports what it is rather than

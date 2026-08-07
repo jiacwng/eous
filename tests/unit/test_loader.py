@@ -31,11 +31,6 @@ def test_every_fixture_parses(fixture_case: tuple[Path, str, str]) -> None:
     assert binary.path == path
 
 
-def test_declared_scope_matches_the_constants() -> None:
-    assert loader.SUPPORTED_FORMATS == ("pe", "elf")
-    assert loader.SUPPORTED_ARCHES == ("x86", "x86-64")
-
-
 def test_entry_point_is_set(fixture_case: tuple[Path, str, str]) -> None:
     binary = loader.load(fixture_case[0])
     assert binary.entry_point > 0

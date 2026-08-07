@@ -18,8 +18,6 @@ MANAGED = "managed"
 # A binary keeping a tenth of its code readable still has code worth digesting.
 PACKED_SHARE = 0.9
 
-GATES = (UNREADABLE, UNSUPPORTED_FORMAT, UNSUPPORTED_ARCH, PACKED, MANAGED)
-
 
 @dataclass(frozen=True)
 class Refusal:
