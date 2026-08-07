@@ -66,7 +66,7 @@ def analyse(path: Path) -> Analysis:
         share = f"{sweep.compressed_share:.0%} of executable code is compressed"
         return _refuse(path, PACKED, share)
 
-    text = build_digest(sweep.chunks, binary.arch)
+    text = build_digest(sweep.chunks, binary.target)
 
     if text is None:
         return _refuse(path, UNREADABLE, "too little readable code")

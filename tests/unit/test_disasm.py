@@ -40,6 +40,7 @@ def binary(*sections: loader.Section, arch: str = "x86") -> loader.Binary:
         path=Path("synthetic"),
         format="pe",
         arch=arch,
+        bits=loader.BITS.get(arch, 64),
         entry_point=0x1000,
         sections=tuple(sections),
         is_il_only=False,

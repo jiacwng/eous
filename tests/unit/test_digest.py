@@ -104,18 +104,18 @@ def test_the_two_personalisations_differ() -> None:
 
 
 def test_mnemonics_become_roots() -> None:
-    result = digest.normalise((chunk("mov", "push", "ret"),), "x86-64")
+    result = digest.normalise((chunk("mov", "push", "ret"),), "pe64")
     assert result == [["mov", "push", "ret"]]
 
 
 def test_an_unknown_mnemonic_becomes_the_oov_token() -> None:
-    result = digest.normalise((chunk("mov", "wibble", "ret"),), "x86-64")
+    result = digest.normalise((chunk("mov", "wibble", "ret"),), "pe64")
     assert result == [["mov", digest.OOV, "ret"]]
 
 
 # Removing it would join two instructions that were apart, inventing a sequence.
 def test_the_unknown_token_keeps_its_position() -> None:
-    result = digest.normalise((chunk("push", "wibble", "pop"),), "x86-64")
+    result = digest.normalise((chunk("push", "wibble", "pop"),), "pe64")
     assert len(result[0]) == 3
     assert result[0][1] == digest.OOV
 
@@ -202,46 +202,46 @@ def test_an_empty_shingle_set_names_its_cause() -> None:
 
 
 def test_a_digest_carries_four_fields() -> None:
-    text = digest.digest(straight(40), "x86-64")
+    text = digest.digest(straight(40), "pe64")
     assert text is not None
     assert text.split(":")[0] == "EO1"
-    assert text.split(":")[1] == "x86-64"
+    assert text.split(":")[1] == "pe64"
     assert len(text.split(":")[3]) == digest.SKETCH_HEX
 
 
 def test_cardinality_counts_distinct_shingles() -> None:
     tokens = varied(digest.NGRAM + 2, seed=1)
-    text = digest.digest((tuple(tokens),), "x86")
+    text = digest.digest((tuple(tokens),), "pe32")
     assert text is not None
     assert int(text.split(":")[2]) == len(digest.shingles([tokens]))
 
 
 def test_unrecognisable_mnemonics_yield_no_digest() -> None:
-    assert digest.digest((tuple(f"wibble{i}" for i in range(400)),), "x86-64") is None
+    assert digest.digest((tuple(f"wibble{i}" for i in range(400)),), "pe64") is None
 
 
 def test_too_little_code_yields_no_digest() -> None:
-    assert digest.digest((chunk("mov", "ret"),), "x86-64") is None
+    assert digest.digest((chunk("mov", "ret"),), "pe64") is None
 
 
-def test_an_empty_sweep_yields_no_digest() -> None:
-    assert digest.digest((), "x86-64") is None
+def test_no_disassembled_instructions_yield_no_digest() -> None:
+    assert digest.digest((), "pe64") is None
 
 
-def test_an_unsupported_architecture_raises() -> None:
+def test_an_unsupported_target_raises() -> None:
     with pytest.raises(DigestError, match="mips"):
         digest.digest(straight(40), "mips")
 
 
 def test_the_same_input_digests_the_same_way() -> None:
-    assert digest.digest(straight(40), "x86") == digest.digest(straight(40), "x86")
+    assert digest.digest(straight(40), "pe32") == digest.digest(straight(40), "pe32")
 
 
 # ---- parsing ----------------------------------------------------------------
 
 
 def test_a_digest_round_trips() -> None:
-    text = digest.digest(straight(40), "x86-64")
+    text = digest.digest(straight(40), "pe64")
     assert text is not None
     assert digest.parse(text).render() == text
 
@@ -249,13 +249,13 @@ def test_a_digest_round_trips() -> None:
 @pytest.mark.parametrize(
     ("text", "complaint"),
     [
-        ("EO1:x86:12", "4 fields"),
-        ("EO2:x86:12:" + "a" * 128, "version"),
-        ("EO1:mips:12:" + "a" * 128, "architecture"),
-        ("EO1:x86:many:" + "a" * 128, "integer"),
-        ("EO1:x86:12:" + "a" * 127, "hex"),
-        ("EO1:x86:12:" + "A" * 128, "hex"),
-        ("EO1:x86:12:" + "z" * 128, "hex"),
+        ("EO1:pe32:12", "4 fields"),
+        ("EO2:pe32:12:" + "a" * 128, "version"),
+        ("EO1:mips:12:" + "a" * 128, "target"),
+        ("EO1:pe32:many:" + "a" * 128, "integer"),
+        ("EO1:pe32:12:" + "a" * 127, "hex"),
+        ("EO1:pe32:12:" + "A" * 128, "hex"),
+        ("EO1:pe32:12:" + "z" * 128, "hex"),
     ],
 )
 def test_a_malformed_digest_raises(text: str, complaint: str) -> None:
@@ -267,29 +267,29 @@ def test_a_malformed_digest_raises(text: str, complaint: str) -> None:
 
 
 def test_a_digest_matches_itself_completely() -> None:
-    text = digest.digest(straight(60), "x86-64")
+    text = digest.digest(straight(60), "pe64")
     assert text is not None
     assert digest.compare(text, text).similarity == pytest.approx(100.0)
 
 
 def test_unrelated_inputs_score_near_zero() -> None:
-    left = digest.digest((tuple(varied(600, seed=11)),), "x86-64")
-    right = digest.digest((tuple(varied(600, seed=22)),), "x86-64")
+    left = digest.digest((tuple(varied(600, seed=11)),), "pe64")
+    right = digest.digest((tuple(varied(600, seed=22)),), "pe64")
     assert left is not None and right is not None
     assert digest.compare(left, right).similarity < 25.0
 
 
 def test_overlapping_inputs_score_between() -> None:
     shared = varied(400, seed=33)
-    left = digest.digest((tuple(shared + varied(400, seed=44)),), "x86-64")
-    right = digest.digest((tuple(shared + varied(400, seed=55)),), "x86-64")
+    left = digest.digest((tuple(shared + varied(400, seed=44)),), "pe64")
+    right = digest.digest((tuple(shared + varied(400, seed=55)),), "pe64")
     assert left is not None and right is not None
     score = digest.compare(left, right).similarity
     assert 10.0 < score < 95.0
 
 
 def test_comparison_accepts_parsed_sketches() -> None:
-    text = digest.digest(straight(60), "x86")
+    text = digest.digest(straight(60), "pe32")
     assert text is not None
     assert digest.compare(sketch_of(text), sketch_of(text)).similarity == pytest.approx(100.0)
 
@@ -300,7 +300,7 @@ def test_comparison_accepts_parsed_sketches() -> None:
 def group_of(count: int) -> list[digest.Sketch]:
     built = []
     for seed in range(count):
-        text = digest.digest((tuple(varied(300, seed=seed)),), "x86-64")
+        text = digest.digest((tuple(varied(300, seed=seed)),), "pe64")
         assert text is not None
         built.append(sketch_of(text))
     return built
@@ -341,33 +341,33 @@ def test_a_sketch_scores_full_against_itself_in_a_batch() -> None:
     assert float(scored[0]) == 100.0
 
 
-def test_differing_architectures_raise() -> None:
-    left = digest.digest(straight(60), "x86")
-    right = digest.digest(straight(60), "x86-64")
+def test_differing_targets_raise() -> None:
+    left = digest.digest(straight(60), "pe32")
+    right = digest.digest(straight(60), "pe64")
     assert left is not None and right is not None
-    with pytest.raises(DigestError, match="architectures differ"):
+    with pytest.raises(DigestError, match="different targets"):
         digest.compare(left, right)
 
 
 def test_differing_versions_raise() -> None:
-    text = digest.digest(straight(60), "x86")
+    text = digest.digest(straight(60), "pe32")
     assert text is not None
     original = digest.parse(text)
-    other = digest.Sketch("EO9", original.arch, original.cardinality, original.slots)
+    other = digest.Sketch("EO9", original.target, original.cardinality, original.slots)
     with pytest.raises(DigestError, match="versions differ"):
         digest.compare(original, other)
 
 
 def test_uncertainty_is_reported_and_bounded() -> None:
-    left = digest.digest((tuple(varied(600, seed=66)),), "x86-64")
-    right = digest.digest((tuple(varied(600, seed=77)),), "x86-64")
+    left = digest.digest((tuple(varied(600, seed=66)),), "pe64")
+    right = digest.digest((tuple(varied(600, seed=77)),), "pe64")
     assert left is not None and right is not None
     scores = digest.compare(left, right)
     assert 0.0 <= scores.uncertainty < 20.0
 
 
 def test_identical_sketches_carry_zero_uncertainty() -> None:
-    text = digest.digest(straight(60), "x86-64")
+    text = digest.digest(straight(60), "pe64")
     assert text is not None
     assert digest.compare(text, text).uncertainty == pytest.approx(0.0)
 
@@ -376,7 +376,7 @@ def test_identical_sketches_carry_zero_uncertainty() -> None:
 
 
 def test_containment_is_reported_both_ways_at_similar_sizes() -> None:
-    text = digest.digest((tuple(varied(400, seed=88)),), "x86-64")
+    text = digest.digest((tuple(varied(400, seed=88)),), "pe64")
     assert text is not None
     scores = digest.compare(text, text)
     assert scores.left_in_right == pytest.approx(100.0)
@@ -384,8 +384,8 @@ def test_containment_is_reported_both_ways_at_similar_sizes() -> None:
 
 
 def test_containment_is_withheld_in_both_directions_beyond_the_ratio() -> None:
-    small = digest.digest((tuple(varied(30, seed=99)),), "x86-64")
-    large = digest.digest((tuple(varied(3000, seed=99)),), "x86-64")
+    small = digest.digest((tuple(varied(30, seed=99)),), "pe64")
+    large = digest.digest((tuple(varied(3000, seed=99)),), "pe64")
     assert small is not None and large is not None
     scores = digest.compare(small, large)
     assert scores.left_in_right is None
@@ -395,8 +395,8 @@ def test_containment_is_withheld_in_both_directions_beyond_the_ratio() -> None:
 # The gap between the two directions is the useful part: it names the superset.
 def test_a_subset_shows_the_asymmetry() -> None:
     tokens = varied(900, seed=41)
-    whole = digest.digest((tuple(tokens),), "x86-64")
-    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "x86-64")
+    whole = digest.digest((tuple(tokens),), "pe64")
+    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "pe64")
     assert whole is not None and part is not None
 
     scores = digest.compare(part, whole)
@@ -406,8 +406,8 @@ def test_a_subset_shows_the_asymmetry() -> None:
 
 def test_the_directions_swap_with_the_arguments() -> None:
     tokens = varied(900, seed=42)
-    whole = digest.digest((tuple(tokens),), "x86-64")
-    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "x86-64")
+    whole = digest.digest((tuple(tokens),), "pe64")
+    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "pe64")
     assert whole is not None and part is not None
 
     forward = digest.compare(part, whole)
@@ -418,7 +418,7 @@ def test_the_directions_swap_with_the_arguments() -> None:
 
 
 def test_containment_carries_a_margin_of_error_whenever_it_is_reported() -> None:
-    text = digest.digest((tuple(varied(400, seed=88)),), "x86-64")
+    text = digest.digest((tuple(varied(400, seed=88)),), "pe64")
     assert text is not None
     scores = digest.compare(text, text)
     assert scores.left_in_right_uncertainty is not None
@@ -426,8 +426,8 @@ def test_containment_carries_a_margin_of_error_whenever_it_is_reported() -> None
 
 
 def test_a_withheld_containment_carries_no_margin_of_error() -> None:
-    small = digest.digest((tuple(varied(30, seed=99)),), "x86-64")
-    large = digest.digest((tuple(varied(3000, seed=99)),), "x86-64")
+    small = digest.digest((tuple(varied(30, seed=99)),), "pe64")
+    large = digest.digest((tuple(varied(3000, seed=99)),), "pe64")
     assert small is not None and large is not None
     scores = digest.compare(small, large)
     assert scores.left_in_right_uncertainty is None
@@ -438,9 +438,9 @@ def test_a_withheld_containment_carries_no_margin_of_error() -> None:
 # and 24 at a 4x gap, so the margin the reader sees has to widen the same way.
 def test_the_margin_of_error_widens_with_the_size_gap() -> None:
     tokens = varied(1200, seed=77)
-    whole = digest.digest((tuple(tokens),), "x86-64")
-    near = digest.digest((tuple(tokens[: int(len(tokens) * 0.9)]),), "x86-64")
-    far = digest.digest((tuple(tokens[: len(tokens) // 3]),), "x86-64")
+    whole = digest.digest((tuple(tokens),), "pe64")
+    near = digest.digest((tuple(tokens[: int(len(tokens) * 0.9)]),), "pe64")
+    far = digest.digest((tuple(tokens[: len(tokens) // 3]),), "pe64")
     assert whole is not None and near is not None and far is not None
 
     close = digest.compare(near, whole)
@@ -459,9 +459,9 @@ def test_the_margin_of_error_widens_with_the_size_gap() -> None:
 )
 def test_every_fixture_digests(name: str) -> None:
     binary = loader.load(FIXTURES / name)
-    text = digest.digest(disasm.sweep(binary).chunks, binary.arch)
+    text = digest.digest(disasm.sweep(binary).chunks, binary.target)
     assert text is not None
-    assert digest.parse(text).arch == binary.arch
+    assert digest.parse(text).target == binary.target
 
 
 @pytest.mark.parametrize(
@@ -470,31 +470,31 @@ def test_every_fixture_digests(name: str) -> None:
 )
 def test_the_array_path_matches_the_reference_on_every_fixture(name: str) -> None:
     binary = loader.load(FIXTURES / name)
-    grams = digest.shingles(digest.normalise(disasm.sweep(binary).chunks, binary.arch))
+    grams = digest.shingles(digest.normalise(disasm.sweep(binary).chunks, binary.target))
     assert digest.pack(grams) == reference_pack(grams)
 
 
 def test_a_fixture_digests_the_same_way_twice() -> None:
     binary = loader.load(FIXTURES / "fixture-pe-x64.exe")
     chunks = disasm.sweep(binary).chunks
-    assert digest.digest(chunks, binary.arch) == digest.digest(chunks, binary.arch)
+    assert digest.digest(chunks, binary.target) == digest.digest(chunks, binary.target)
 
 
-def test_the_two_pe_fixtures_share_their_source() -> None:
+def test_the_two_pe_fixtures_refuse_to_compare() -> None:
     left = loader.load(FIXTURES / "fixture-pe-x64.exe")
     right = loader.load(FIXTURES / "fixture-pe-x86.exe")
-    a = digest.digest(disasm.sweep(left).chunks, left.arch)
-    b = digest.digest(disasm.sweep(right).chunks, right.arch)
+    a = digest.digest(disasm.sweep(left).chunks, left.target)
+    b = digest.digest(disasm.sweep(right).chunks, right.target)
     assert a is not None and b is not None
-    with pytest.raises(DigestError, match="architectures differ"):
+    with pytest.raises(DigestError, match="different targets"):
         digest.compare(a, b)
 
 
-def test_the_same_architecture_across_formats_compares() -> None:
+def test_one_width_across_formats_refuses_to_compare() -> None:
     pe = loader.load(FIXTURES / "fixture-pe-x64.exe")
     elf = loader.load(FIXTURES / "fixture-elf-x64")
-    a = digest.digest(disasm.sweep(pe).chunks, pe.arch)
-    b = digest.digest(disasm.sweep(elf).chunks, elf.arch)
+    a = digest.digest(disasm.sweep(pe).chunks, pe.target)
+    b = digest.digest(disasm.sweep(elf).chunks, elf.target)
     assert a is not None and b is not None
-    scores = digest.compare(a, b)
-    assert 0.0 <= scores.similarity <= 100.0
+    with pytest.raises(DigestError, match="different targets"):
+        digest.compare(a, b)

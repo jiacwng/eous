@@ -1,6 +1,6 @@
 # Turns chunks of mnemonics into an EO1 digest, and scores digests against each other.
 #
-# A digest reads EO1:arch:cardinality:sketch. Changing any constant below changes every digest.
+# A digest reads EO1:target:cardinality:sketch, and every constant below shapes it.
 
 from __future__ import annotations
 
@@ -39,7 +39,8 @@ MASK = (1 << SLOT_BITS) - 1
 SKETCH_BYTES = PERMUTATIONS * SLOT_BITS // 8
 SKETCH_HEX = SKETCH_BYTES * 2
 
-SUPPORTED_ARCHES = ("x86", "x86-64")
+# The format and the width together, because a digest compares only against its own kind.
+TARGETS = ("pe32", "pe64", "elf32", "elf64")
 SKETCH_PATTERN = re.compile(f"^[0-9a-f]{{{SKETCH_HEX}}}$")
 
 
@@ -134,13 +135,13 @@ def _minima(hashes: numpy.ndarray) -> numpy.ndarray:
 @dataclass(frozen=True)
 class Sketch:
     version: str
-    arch: str
+    target: str
     cardinality: int
     slots: int
 
     def render(self) -> str:
         body = self.slots.to_bytes(SKETCH_BYTES, "big").hex()
-        return f"{self.version}:{self.arch}:{self.cardinality}:{body}"
+        return f"{self.version}:{self.target}:{self.cardinality}:{body}"
 
 
 @dataclass(frozen=True)
@@ -153,8 +154,15 @@ class Scores:
     right_in_left_uncertainty: float | None
 
 
-def normalise(chunks: tuple[tuple[str, ...], ...], arch: str) -> list[list[str]]:
-    vocab = load_vocab(arch)
+def instruction_set(target: str) -> str:
+    # Both formats run the same instructions, so the vocabulary is keyed by width alone.
+    if target not in TARGETS:
+        raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
+    return "x86" if target.endswith("32") else "x86-64"
+
+
+def normalise(chunks: tuple[tuple[str, ...], ...], target: str) -> list[list[str]]:
+    vocab = load_vocab(instruction_set(target))
     return [[vocab.root_of(mnemonic) or OOV for mnemonic in chunk] for chunk in chunks]
 
 
@@ -187,16 +195,13 @@ def pack(grams: set[tuple[str, ...]]) -> int:
     return accumulated
 
 
-def digest(chunks: tuple[tuple[str, ...], ...], arch: str) -> str | None:
-    if arch not in SUPPORTED_ARCHES:
-        raise DigestError(f"unsupported architecture {arch!r}")
-
-    grams = shingles(normalise(chunks, arch))
+def digest(chunks: tuple[tuple[str, ...], ...], target: str) -> str | None:
+    grams = shingles(normalise(chunks, target))
     if not grams:
         # Too little readable code to describe, so the caller names the cause instead.
         return None
 
-    return Sketch(VERSION, arch, len(grams), pack(grams)).render()
+    return Sketch(VERSION, target, len(grams), pack(grams)).render()
 
 
 def parse(text: str) -> Sketch:
@@ -204,17 +209,17 @@ def parse(text: str) -> Sketch:
     if len(fields) != 4:
         raise DigestError(f"expected 4 fields, found {len(fields)}")
 
-    version, arch, cardinality, body = fields
+    version, target, cardinality, body = fields
     if version != VERSION:
         raise DigestError(f"expected version {VERSION}, found {version!r}")
-    if arch not in SUPPORTED_ARCHES:
-        raise DigestError(f"unsupported architecture {arch!r}")
+    if target not in TARGETS:
+        raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
     if not cardinality.isdigit():
         raise DigestError(f"cardinality {cardinality!r} is a non-negative integer")
     if not SKETCH_PATTERN.match(body):
         raise DigestError(f"sketch is {SKETCH_HEX} lower-case hex characters")
 
-    return Sketch(version, arch, int(cardinality), int(body, 16))
+    return Sketch(version, target, int(cardinality), int(body, 16))
 
 
 def unpack(sketch: Sketch) -> numpy.ndarray:
@@ -245,14 +250,23 @@ def similarities(rows: numpy.ndarray, one: numpy.ndarray) -> numpy.ndarray:
     return _jaccard(_agreement(rows, one)) * 100.0
 
 
+def margins(scores: numpy.ndarray) -> numpy.ndarray:
+    # The same sampling error `compare` reports, recovered from the score.
+    agreed = scores / 100.0 * (1 - FLOOR) + FLOOR
+    spread: numpy.ndarray = numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS) / (1 - FLOOR) * 100
+    return spread
+
+
 def compare(left: Sketch | str, right: Sketch | str) -> Scores:
     first = parse(left) if isinstance(left, str) else left
     second = parse(right) if isinstance(right, str) else right
 
     if first.version != second.version:
         raise DigestError(f"versions differ: {first.version} and {second.version}")
-    if first.arch != second.arch:
-        raise DigestError(f"architectures differ: {first.arch} and {second.arch}")
+    # Rebuilding for another target changes which instructions appear, so the score lands
+    # where unrelated pairs already sit. Measured in local/roadmap.md.
+    if first.target != second.target:
+        raise DigestError(f"different targets: {first.target} and {second.target}")
 
     agreed = _agreement(unpack(first).reshape(1, -1), unpack(second))
     observed = float(agreed[0])

@@ -356,3 +356,16 @@ def test_entropy_stays_within_eight_bits() -> None:
     # A byte carries at most 8 bits, so a skewed distribution must stay under the ceiling.
     data = bytes(byte for byte in range(256) for _ in range(byte))
     assert loader.data_entropy(data) <= 8.0 + math.ulp(8.0)
+
+
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [
+        ("fixture-pe-x64.exe", "pe64"),
+        ("fixture-pe-x86.exe", "pe32"),
+        ("fixture-elf-x64", "elf64"),
+        ("fixture-elf-x86", "elf32"),
+    ],
+)
+def test_the_target_names_the_format_and_the_width(name: str, target: str) -> None:
+    assert loader.load(FIXTURES / name).target == target
