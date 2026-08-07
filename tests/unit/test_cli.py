@@ -372,7 +372,9 @@ def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[s
     assert "100.0%" in output.readouterr().out
 
 
-def test_comparison_prints_the_band_and_its_range(output: pytest.CaptureFixture[str]) -> None:
+def test_comparison_prints_the_margin_of_error_and_its_range(
+    output: pytest.CaptureFixture[str],
+) -> None:
     cli.main(["compare", str(CLEAN), str(CLEAN)])
     out = output.readouterr().out
     assert "similarity:" in out
@@ -504,8 +506,8 @@ def test_digest_inputs_are_labelled_left_and_right(output: pytest.CaptureFixture
     cli.main(["compare", text, text])
     lines = output.readouterr().out.splitlines()
     directions = [" ".join(line.split()) for line in lines if " in " in line]
-    assert "containment: left in right 100.0%" in directions
-    assert "right in left 100.0%" in directions
+    assert any(d.startswith("containment: left in right 100.0%") for d in directions)
+    assert any(d.startswith("right in left 100.0%") for d in directions)
 
 
 # ---- exit codes -------------------------------------------------------------

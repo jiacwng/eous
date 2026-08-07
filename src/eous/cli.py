@@ -54,16 +54,16 @@ examples:
 
 reading a comparison:
   similarity:  27.6% +/- 8.0 (19.6% to 35.6%)
-  containment: old.exe in new.exe   94.1%
-               new.exe in old.exe   41.2%
+  containment: old.exe in new.exe   94.1% +/- 12
+               new.exe in old.exe   41.2% +/- 5
 
-  The band is sampling error, since 256 slots estimate the overlap rather than
-  measure it. It narrows as scores approach 100%. Two results whose bands
-  overlap stay unranked against each other.
+  The +/- figure is the margin of error, since 256 slots estimate the overlap.
+  It narrows as scores approach 100%. Two results whose ranges overlap stay
+  unranked against each other.
 
   Containment runs both ways, and the gap between them says which side is the
-  superset. Above a 4x size difference both are withheld, since the estimate
-  stops being reliable there.
+  superset. It comes from the same estimate, so its margin is wider, and it
+  grows with the size difference. Above 4x both figures are withheld.
 
 a refusal names its cause:
   eous: sample.macho: unsupported_format: macho
@@ -216,8 +216,14 @@ def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
 
     left, right = labels
     width = max(len(left), len(right))
-    print(f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%")
-    print(f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%")
+    print(
+        f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%"
+        f" +/- {scores.left_in_right_uncertainty:.0f}"
+    )
+    print(
+        f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%"
+        f" +/- {scores.right_in_left_uncertainty:.0f}"
+    )
 
 
 def _as_scores(scores: digest.Scores, labels: list[str]) -> dict[str, object]:
@@ -233,6 +239,8 @@ def _as_scores(scores: digest.Scores, labels: list[str]) -> dict[str, object]:
         "high": round(min(100.0, scores.similarity + scores.uncertainty), 4),
         "left_in_right": rounded(scores.left_in_right),
         "right_in_left": rounded(scores.right_in_left),
+        "left_in_right_uncertainty": rounded(scores.left_in_right_uncertainty),
+        "right_in_left_uncertainty": rounded(scores.right_in_left_uncertainty),
     }
 
 
