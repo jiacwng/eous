@@ -14,7 +14,7 @@
    "target": "elf64",
    "decoded": 137,
    "chunks": 13,
-   "digest": "EO1:elf64:57:eb7d3fbc145c9297f617c3167c2345cf0d8831aff894782891208eb4cd84bbd17aa8a6439e35a5daaf3e7ab5b9a7f7f3b024912aeb4182781d82d42443a2b717"
+   "digest": "EO1:elf64:62:eb7d3fbc145c9297f617c0167c2745cf0d88332ff894782a91208eb4cd84bbf5b6a8ae43aeb5a5daaf3e7ab5b5a4f7f3b024912aaa4182782d829424c3a2b713"
   },
   {
    "name": "fixture-elf-x86",
@@ -30,7 +30,7 @@
    "target": "pe64",
    "decoded": 14079,
    "chunks": 1816,
-   "digest": "EO1:pe64:3136:5cfc520f897cc0cf9622f03b61b14c6278c0ce587edba27f95f183e8ab518865ea11763cbbccc87663e9db036d32e5d466631c7fad01fe8ce028ec0c99922e47"
+   "digest": "EO1:pe64:3155:5cfc520f897cc0cf9622f03b61b14c6278c0ce587edba27f95f183e8ab518865ea11763cbbccc87663e9db036d32e5d466631c7fad01fe8ce028ec0c99922e47"
   },
   {
    "name": "fixture-pe-x86.exe",
@@ -38,7 +38,7 @@
    "target": "pe32",
    "decoded": 18469,
    "chunks": 1690,
-   "digest": "EO1:pe32:5252:6ded051fc45bc751f633f4dc124b02ef80be4902d67e4a1101e6c59cd080c9ffd096e26188476b76aab012afe0bc9f1263a3c93647fb5219521742f30d260a50"
+   "digest": "EO1:pe32:5254:6ded051fc45bc751f633f4dc124b02ef80be4902d67e4a1101e6c59cd080c9ffd096e26188476b76aab012afe0bc9f1263a3c93647fb5219521742f30d260a50"
   }
  ],
  "synthetic": {

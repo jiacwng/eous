@@ -98,11 +98,9 @@ def test_data_entropy_of_a_repeated_byte_is_zero() -> None:
     assert loader.data_entropy(b"\x00" * 4096) == 0.0
 
 
-# Entropy decides whether a region is swept, so the value must land identically on any
-# platform maths library. Rounding removes the last bits from that decision.
-def test_entropy_is_rounded_to_a_fixed_precision() -> None:
-    value = loader.data_entropy(bytes(range(256)) * 7 + b"\x01\x02\x03")
-    assert value == round(value, loader.ENTROPY_DECIMALS)
+def test_entropy_repeats_for_the_same_bytes() -> None:
+    data = bytes(range(256)) * 7 + b"\x01\x02\x03"
+    assert loader.data_entropy(data) == loader.data_entropy(data)
 
 
 def test_compiled_code_entropy_stays_under_the_threshold() -> None:

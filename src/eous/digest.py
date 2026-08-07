@@ -27,7 +27,6 @@ MODULUS = (1 << 61) - 1
 
 SEPARATOR = b"\x1f"
 OOV = "<oov>"
-MAX_OOV_PER_SHINGLE = 1
 
 MAX_CONTAINMENT_RATIO = 4.0
 
@@ -166,14 +165,10 @@ def normalise(chunks: tuple[tuple[str, ...], ...], target: str) -> list[list[str
     return [[vocab.root_of(mnemonic) or OOV for mnemonic in chunk] for chunk in chunks]
 
 
-def shingles(chunks: list[list[str]]) -> set[tuple[str, ...]]:
-    grams: set[tuple[str, ...]] = set()
-    for chunk in chunks:
-        for start in range(len(chunk) - NGRAM + 1):
-            window = tuple(chunk[start : start + NGRAM])
-            if window.count(OOV) <= MAX_OOV_PER_SHINGLE:
-                grams.add(window)
-    return grams
+def shingles(runs: list[list[str]]) -> set[tuple[str, ...]]:
+    return {
+        tuple(run[start : start + NGRAM]) for run in runs for start in range(len(run) - NGRAM + 1)
+    }
 
 
 def pack(grams: set[tuple[str, ...]]) -> int:
