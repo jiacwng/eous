@@ -132,6 +132,59 @@ def test_one_readable_region_keeps_the_digest(tmp_path: Path) -> None:
     assert report.analyse(target).digest is not None
 
 
+def posed_as(monkeypatch: pytest.MonkeyPatch, sections: tuple[loader.Section, ...]) -> None:
+    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
+    posed = loader.Binary(
+        path=source.path,
+        format=source.format,
+        arch=source.arch,
+        entry_point=source.entry_point,
+        sections=sections,
+        is_il_only=False,
+        has_managed_native=False,
+    )
+    monkeypatch.setattr(report.loader, "load", lambda _: posed)
+
+
+# No clean file in 15,435 has a writable code section.
+def test_a_writable_executable_section_refuses_as_packed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
+    sections = tuple(
+        loader.Section(
+            name=s.name,
+            virtual_address=s.virtual_address,
+            virtual_size=s.virtual_size,
+            raw_size=s.raw_size,
+            executable=s.executable,
+            writable=True if s.executable else s.writable,
+            data=s.data,
+        )
+        for s in source.sections
+    )
+    posed_as(monkeypatch, sections)
+
+    result = report.analyse(PE64)
+    assert result.digest is None
+    assert result.refusal is not None
+    assert result.refusal.gate == report.PACKED
+    assert "writable" in result.refusal.detail
+
+
+def test_a_binary_with_no_executable_section_refuses_as_packed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
+    posed_as(monkeypatch, tuple(s for s in source.sections if not s.executable))
+
+    result = report.analyse(PE64)
+    assert result.digest is None
+    assert result.refusal is not None
+    assert result.refusal.gate == report.PACKED
+    assert result.refusal.detail == "no executable section"
+
+
 def managed(
     monkeypatch: pytest.MonkeyPatch, *, il_only: bool, native: bool, entropy_bytes: bytes = b""
 ) -> None:

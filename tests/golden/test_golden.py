@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from eous import digest, disasm, loader, toolchain
+from eous import cli, digest, disasm, loader, toolchain
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures" / "bin"
@@ -22,6 +22,18 @@ def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> N
     binary = loader.load(path)
     produced = digest.digest(disasm.sweep(binary).chunks, binary.arch)
     assert produced == entry["digest"]
+
+
+# The command hashes in worker processes, and Linux starts them differently from Windows.
+def test_the_pooled_command_reproduces_every_vector(capsys: pytest.CaptureFixture[str]) -> None:
+    paths = [str(FIXTURES / str(entry["name"])) for entry in FILES]
+    assert len(paths) > 1, "a single path skips the pool, which is the thing under test"
+
+    assert cli.main(["hash", *paths]) == 0
+
+    printed = capsys.readouterr().out
+    for entry, path in zip(FILES, paths, strict=True):
+        assert f"{path}  {entry['digest']}" in printed
 
 
 # The fixture has to be the same file, otherwise a rebuilt binary would look like an

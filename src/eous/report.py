@@ -15,8 +15,8 @@ UNSUPPORTED_ARCH = "unsupported_arch"
 PACKED = "packed"
 MANAGED = "managed"
 
-# A binary keeping a tenth of its code readable still has code worth digesting.
-PACKED_SHARE = 0.9
+# 0.9 let ASPack, PECompact and Packman through. Anything from 0.1 to 0.7 scores the same.
+PACKED_SHARE = 0.5
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,15 @@ def analyse(path: Path) -> Analysis:
     # instructions to read.
     if binary.is_il_only and not binary.has_managed_native:
         return _refuse(path, MANAGED, "il only, no native code")
+
+    executable = binary.executable_sections
+    if not executable:
+        return _refuse(path, PACKED, "no executable section")
+
+    # No clean file in 15,435 has a writable code section. It catches Alienyze 129 of 129.
+    writable = next((section.name for section in executable if section.writable), None)
+    if writable is not None:
+        return _refuse(path, PACKED, f"executable section {writable} is writable")
 
     sweep = disasm.sweep(binary)
     if sweep.compressed_share >= PACKED_SHARE:
