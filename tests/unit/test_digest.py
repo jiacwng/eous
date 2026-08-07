@@ -423,6 +423,40 @@ def test_the_directions_swap_with_the_arguments() -> None:
     backward = digest.compare(whole, part)
     assert forward.left_in_right == pytest.approx(backward.right_in_left)
     assert forward.right_in_left == pytest.approx(backward.left_in_right)
+    assert forward.left_in_right_uncertainty == pytest.approx(backward.right_in_left_uncertainty)
+
+
+def test_containment_carries_a_margin_of_error_whenever_it_is_reported() -> None:
+    text = digest.digest((tuple(varied(400, seed=88)),), "x86-64")
+    assert text is not None
+    scores = digest.compare(text, text)
+    assert scores.left_in_right_uncertainty is not None
+    assert scores.right_in_left_uncertainty is not None
+
+
+def test_a_withheld_containment_carries_no_margin_of_error() -> None:
+    small = digest.digest((tuple(varied(30, seed=99)),), "x86-64")
+    large = digest.digest((tuple(varied(3000, seed=99)),), "x86-64")
+    assert small is not None and large is not None
+    scores = digest.compare(small, large)
+    assert scores.left_in_right_uncertainty is None
+    assert scores.right_in_left_uncertainty is None
+
+
+# Measured against exact containment: the 95th percentile error runs 12 points at equal size
+# and 24 at a 4x gap, so the margin the reader sees has to widen the same way.
+def test_the_margin_of_error_widens_with_the_size_gap() -> None:
+    tokens = varied(1200, seed=77)
+    whole = digest.digest((tuple(tokens),), "x86-64")
+    near = digest.digest((tuple(tokens[: int(len(tokens) * 0.9)]),), "x86-64")
+    far = digest.digest((tuple(tokens[: len(tokens) // 3]),), "x86-64")
+    assert whole is not None and near is not None and far is not None
+
+    close = digest.compare(near, whole)
+    apart = digest.compare(far, whole)
+    assert close.left_in_right_uncertainty is not None
+    assert apart.left_in_right_uncertainty is not None
+    assert apart.left_in_right_uncertainty > close.left_in_right_uncertainty
 
 
 # ---- against the real fixtures ----------------------------------------------
