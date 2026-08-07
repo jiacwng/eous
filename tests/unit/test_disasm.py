@@ -241,6 +241,33 @@ def test_non_executable_sections_are_left_alone() -> None:
     assert result.chunks == ()
 
 
+# ---- the limits come from the section size ----------------------------------
+
+
+# The old fixed limits stopped one clean binary in five early, and no test caught it.
+def test_the_default_bounds_do_not_truncate_a_run_of_one_byte_instructions() -> None:
+    # Worst case: every instruction is one byte.
+    result = disasm.sweep(binary(section(PUSH_EAX * 5000 + RET)))
+    assert result.reports[0].skipped is None
+    assert result.reports[0].decoded == 5001
+
+
+def test_the_default_bounds_do_not_truncate_a_region_that_never_decodes() -> None:
+    # Worst case: every byte fails to decode.
+    result = disasm.sweep(binary(section(INVALID * 2000)))
+    assert result.reports[0].skipped is None
+    assert result.reports[0].stalls == 4000
+
+
+def test_a_digest_taken_with_the_defaults_holds_the_whole_region() -> None:
+    body = (XOR_EAX + PUSH_EAX * 6 + RET) * 400
+    whole = disasm.sweep(binary(section(body)))
+    halved = disasm.sweep(binary(section(body)), max_instructions=whole.total_decoded // 2)
+    assert whole.reports[0].skipped is None
+    assert halved.reports[0].skipped == disasm.BUDGET
+    assert whole.total_decoded > halved.total_decoded
+
+
 # ---- budgets are per region -------------------------------------------------
 
 
