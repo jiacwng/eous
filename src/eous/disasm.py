@@ -11,11 +11,6 @@ from iced_x86 import Decoder, FlowControl, Mnemonic
 
 from eous.loader import BITS, ENTROPY_THRESHOLD, Binary
 
-PADDING_RUN = 8
-
-# `add` belongs here because a run of zero bytes decodes as `add [eax], al`.
-PADDING_MNEMONICS = frozenset({"nop", "int3", "add"})
-
 ENTROPY = "ENTROPY"
 EMPTY = "EMPTY"
 BUDGET = "BUDGET"
@@ -63,7 +58,7 @@ def sweep(
     *,
     max_instructions: int | None = None,
     max_stalls: int | None = None,
-    padding_run: int = PADDING_RUN,
+    repeat_cap: int | None = None,
     minimum_run: int = 1,
 ) -> SweepResult:
     bitness = BITS.get(binary.arch)
@@ -88,7 +83,7 @@ def sweep(
             bitness=bitness,
             max_instructions=max_instructions,
             max_stalls=max_stalls,
-            padding_run=padding_run,
+            repeat_cap=repeat_cap,
             minimum_run=minimum_run,
         )
         chunks.extend(region_chunks)
@@ -107,7 +102,7 @@ def _sweep_region(
     bitness: int,
     max_instructions: int | None,
     max_stalls: int | None,
-    padding_run: int,
+    repeat_cap: int | None,
     minimum_run: int,
 ) -> tuple[list[tuple[str, ...]], RegionReport]:
 
@@ -123,9 +118,9 @@ def _sweep_region(
 
     def close_chunk() -> None:
         if current:
-            collapsed = _collapse_padding(current, padding_run)
-            if len(collapsed) >= minimum_run:
-                chunks.append(tuple(collapsed))
+            kept = current if repeat_cap is None else _cap_repeats(current, repeat_cap)
+            if len(kept) >= minimum_run:
+                chunks.append(tuple(kept))
             current.clear()
 
     while decoder.can_decode:
@@ -158,21 +153,17 @@ def _sweep_region(
     )
 
 
-def _collapse_padding(mnemonics: list[str], padding_run: int) -> list[str]:
-    collapsed: list[str] = []
+def _cap_repeats(mnemonics: list[str], cap: int) -> list[str]:
+    # Filler between functions is one instruction repeated. Windows past the cap repeat a
+    # window already seen, so keeping them changes nothing and costs memory.
+    kept: list[str] = []
     index = 0
 
     while index < len(mnemonics):
-        mnemonic = mnemonics[index]
         end = index
-        while end < len(mnemonics) and mnemonics[end] == mnemonic:
+        while end < len(mnemonics) and mnemonics[end] == mnemonics[index]:
             end += 1
-
-        run = end - index
-        if mnemonic in PADDING_MNEMONICS and run >= padding_run:
-            collapsed.append(mnemonic)
-        else:
-            collapsed.extend(mnemonics[index:end])
+        kept.extend(mnemonics[index : min(end, index + cap)])
         index = end
 
-    return collapsed
+    return kept

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from eous import disasm, loader
+from eous import digest, disasm, loader
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 
@@ -147,48 +147,51 @@ def test_a_prefixed_ordinary_instruction_leaves_the_chunk_open() -> None:
     assert result.chunks == (("xor", "movsb", "xor", "ret"),)
 
 
-# ---- padding ----------------------------------------------------------------
+# ---- repeated instructions --------------------------------------------------
+
+# Filler between functions is one instruction repeated. A window past the cap repeats a
+# window already produced, so the cap is the shingle width and no number of its own.
+CAP = digest.NGRAM
 
 
-def test_a_long_padding_run_collapses_to_one() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + NOP * 20 + RET)))
-    assert mnemonics(result) == ["xor", "nop", "ret"]
+def test_a_long_run_is_capped_at_the_window_width() -> None:
+    result = disasm.sweep(binary(section(XOR_EAX + NOP * 20 + RET)), repeat_cap=CAP)
+    assert mnemonics(result) == ["xor"] + ["nop"] * CAP + ["ret"]
 
 
-def test_a_short_padding_run_survives_intact() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + NOP * 3 + RET)))
+def test_a_run_shorter_than_the_cap_survives_intact() -> None:
+    result = disasm.sweep(binary(section(XOR_EAX + NOP * 3 + RET)), repeat_cap=CAP)
     assert mnemonics(result) == ["xor", "nop", "nop", "nop", "ret"]
 
 
-def test_a_run_exactly_at_the_threshold_collapses() -> None:
-    result = disasm.sweep(binary(section(NOP * disasm.PADDING_RUN + RET)))
-    assert mnemonics(result) == ["nop", "ret"]
+def test_a_run_exactly_at_the_cap_survives_intact() -> None:
+    result = disasm.sweep(binary(section(NOP * CAP + RET)), repeat_cap=CAP)
+    assert mnemonics(result) == ["nop"] * CAP + ["ret"]
 
 
-def test_one_below_the_threshold_survives() -> None:
-    count = disasm.PADDING_RUN - 1
-    result = disasm.sweep(binary(section(NOP * count + RET)))
-    assert mnemonics(result) == ["nop"] * count + ["ret"]
+def test_zero_bytes_are_capped_like_any_repeat() -> None:
+    result = disasm.sweep(binary(section(ZEROS * 20 + RET)), repeat_cap=CAP)
+    assert mnemonics(result) == ["add"] * CAP + ["ret"]
 
 
-def test_a_run_of_zero_bytes_collapses_as_padding() -> None:
-    result = disasm.sweep(binary(section(ZEROS * 20 + RET)))
-    assert mnemonics(result) == ["add", "ret"]
+def test_two_runs_are_capped_separately() -> None:
+    result = disasm.sweep(binary(section(NOP * 10 + INT3 * 10 + RET)), repeat_cap=CAP)
+    assert mnemonics(result) == ["nop"] * CAP + ["int3"] * CAP + ["ret"]
 
 
-def test_int3_padding_collapses() -> None:
-    result = disasm.sweep(binary(section(INT3 * 20 + RET)))
-    assert mnemonics(result) == ["int3", "ret"]
+def test_no_cap_keeps_every_instruction() -> None:
+    result = disasm.sweep(binary(section(NOP * 20 + RET)))
+    assert mnemonics(result) == ["nop"] * 20 + ["ret"]
 
 
-def test_padding_of_differing_mnemonics_stays_separate() -> None:
-    result = disasm.sweep(binary(section(NOP * 10 + INT3 * 10 + RET)))
-    assert mnemonics(result) == ["nop", "int3", "ret"]
-
-
-def test_ordinary_instructions_survive_a_long_run() -> None:
-    result = disasm.sweep(binary(section(PUSH_EAX * 20 + RET)))
-    assert mnemonics(result).count("push") == 20
+# The cap exists because these two sets are equal, which is what lets it carry no number.
+def test_capping_gives_the_shingle_set_that_keeping_everything_gives() -> None:
+    data = XOR_EAX + NOP * 40 + RET + PUSH_EAX * 9 + RET
+    capped = disasm.sweep(binary(section(data), arch="x86-64"), repeat_cap=CAP).chunks
+    whole = disasm.sweep(binary(section(data), arch="x86-64")).chunks
+    assert digest.shingles(digest.normalise(capped, "pe64")) == digest.shingles(
+        digest.normalise(whole, "pe64")
+    )
 
 
 # ---- skip reasons -----------------------------------------------------------

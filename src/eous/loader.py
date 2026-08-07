@@ -20,9 +20,6 @@ lief.logging.disable()
 # 7.0 catches 44.1% of packed files, against 41.7% at 7.2, with the same 0.1% false alarms.
 ENTROPY_THRESHOLD = 7.0
 
-# Rounding holds the decision to disassemble steady across platform maths libraries.
-ENTROPY_DECIMALS = 6
-
 PE_SECTION_EXECUTE = 0x20000000
 PE_SECTION_WRITE = 0x80000000
 ELF_SECTION_EXECUTE = 0x4
@@ -98,7 +95,7 @@ def data_entropy(data: bytes) -> float:
         return 0.0
     counts = numpy.bincount(numpy.frombuffer(data, dtype=numpy.uint8), minlength=256)
     share = counts[counts > 0] / len(data)
-    return round(float(-numpy.sum(share * numpy.log2(share))), ENTROPY_DECIMALS)
+    return float(-numpy.sum(share * numpy.log2(share)))
 
 
 def read_clr(binary: Any) -> tuple[bool, bool]:
