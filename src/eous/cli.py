@@ -182,8 +182,8 @@ def _run_compare(args: argparse.Namespace) -> int:
         result = report.analyse(path)
         if result.digest is None:
             cause = result.refusal
-            reason = f"{cause.gate}: {cause.detail}" if cause else "no digest"
-            print(f"eous: {path}: {reason}", file=sys.stderr)
+            reason = f"{cause.gate}: {_readable(cause.detail)}" if cause else "no digest"
+            print(f"eous: {_readable(str(path))}: {reason}", file=sys.stderr)
             return REFUSED
         resolved.append(result.digest)
         labels.append(text)
@@ -267,13 +267,27 @@ def _expand(paths: list[Path]) -> list[Path]:
     return found
 
 
+def _readable(text: str) -> str:
+    # A section name and a file name both come from the sample. A newline in one would
+    # forge a second line of output, and an escape sequence would rewrite the terminal.
+    return "".join(
+        character
+        if character.isprintable()
+        else f"\\x{ord(character):02x}"
+        if ord(character) < 256
+        else f"\\u{ord(character):04x}"
+        for character in text
+    )
+
+
 def _print_line(result: report.Analysis, labelled: bool, quiet: bool) -> None:
     if result.digest is not None:
-        line = f"{result.path}  {result.digest}" if labelled else result.digest
+        path = _readable(str(result.path))
+        line = f"{path}  {result.digest}" if labelled else result.digest
         print(line, flush=True)
     elif result.refusal is not None and not quiet:
-        gate, detail = result.refusal.gate, result.refusal.detail
-        print(f"eous: {result.path}: {gate}: {detail}", file=sys.stderr)
+        gate, detail = result.refusal.gate, _readable(result.refusal.detail)
+        print(f"eous: {_readable(str(result.path))}: {gate}: {detail}", file=sys.stderr)
 
 
 def _as_record(result: report.Analysis) -> dict[str, object]:

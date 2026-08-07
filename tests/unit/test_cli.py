@@ -529,3 +529,48 @@ def test_an_unexpected_failure_exits_three(
     monkeypatch.setattr(cli.report, "analyse", explode)
     assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
     assert "something gave way" in output.readouterr().err
+
+
+# ---- output cannot be forged by the sample ---------------------------------
+
+
+# A section name is attacker-controlled. A newline in one would forge a second refusal line
+# for a file that was never scanned, and an escape sequence would erase the real one.
+def test_a_section_name_cannot_forge_a_refusal_line(
+    monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    hostile = ".text\x1b[2K\reous: /bin/ls: unreadable: no recognised container\neous: trusted"
+    monkeypatch.setattr(
+        cli.report,
+        "analyse",
+        lambda path: report.Analysis(
+            path=Path(path),
+            digest=None,
+            refusal=report.Refusal(report.PACKED, f"executable section {hostile} is writable"),
+        ),
+    )
+    assert cli.main(["hash", str(CLEAN)]) == cli.REFUSED
+
+    printed = output.readouterr().err
+    assert len(printed.splitlines()) == 1
+    assert "\x1b" not in printed
+    assert "\r" not in printed
+    assert r"\x1b" in printed
+    assert r"\x0a" in printed
+
+
+def test_a_file_name_cannot_forge_a_digest_line(
+    monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    hostile = Path("a\nEO1:x86-64:9999:" + "f" * 128)
+    digested = [
+        report.Analysis(path=hostile, digest="EO1:x86:1:" + "0" * 128, refusal=None),
+        report.Analysis(path=Path(CLEAN), digest="EO1:x86:2:" + "0" * 128, refusal=None),
+    ]
+    monkeypatch.setattr(cli, "_expand", lambda paths: [hostile, Path(CLEAN)])
+    monkeypatch.setattr(cli, "_analyse", lambda paths: iter(digested))
+    assert cli.main(["hash", str(CLEAN), str(CLEAN)]) == cli.OK
+
+    lines = [line for line in output.readouterr().out.splitlines() if line]
+    assert len(lines) == 2, "the newline in the name opened a third record"
+    assert r"\x0a" in lines[0]
