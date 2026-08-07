@@ -77,18 +77,45 @@ def test_each_section_starts_a_fresh_chunk() -> None:
     assert result.chunks == (("xor",), ("push",))
 
 
-@pytest.mark.parametrize("terminator", ["ret", "jmp", "call", "hlt", "syscall"])
-def test_the_terminator_set_names_real_instructions(terminator: str) -> None:
-    assert terminator in disasm.TERMINATORS
+# Each instruction goes after a body and has to close the chunk.
+BODY = b"\x55\x48\x89\xe5\x31\xc0"
+
+ENDS_A_CHUNK = [
+    (b"\xc3", "ret"),
+    (b"\x48\xcb", "retfq"),
+    (b"\xeb\x00", "jmp"),
+    (b"\xff\xe0", "jmp rax"),
+    (b"\xe8\x00\x00\x00\x00", "call"),
+    (b"\xff\xd0", "call rax"),
+    (b"\x0f\x05", "syscall"),
+    (b"\x0f\x0b", "ud2"),
+    (b"\x74\x00", "je"),
+    (b"\x75\x00", "jne"),
+    (b"\x77\x00", "ja"),
+    (b"\x76\x00", "jbe"),
+    (b"\x7f\x00", "jg"),
+    (b"\x7e\x00", "jle"),
+    (b"\xe2\x00", "loop"),
+    (b"\xe3\x00", "jrcxz"),
+]
 
 
-def test_conditional_branches_all_terminate() -> None:
-    for mnemonic in ["je", "jne", "jz", "jnz", "ja", "jbe", "jg", "jle"]:
-        assert mnemonic in disasm.TERMINATORS
+@pytest.mark.parametrize(("encoding", "label"), ENDS_A_CHUNK, ids=[p[1] for p in ENDS_A_CHUNK])
+def test_control_flow_ends_the_chunk(encoding: bytes, label: str) -> None:
+    result = disasm.sweep(binary(section((BODY + encoding) * 2), arch="x86-64"))
+    assert len(result.chunks) == 2, f"{label} left the chunk open: {result.chunks}"
 
 
-def test_the_64_bit_far_return_terminates() -> None:
-    assert "retfq" in disasm.TERMINATORS
+# int3 is usually padding between functions, so a chunk runs through it.
+FALLS_THROUGH = [(b"\xcc", "int3"), (b"\xf4", "hlt"), (b"\x90", "nop")]
+
+
+@pytest.mark.parametrize(("encoding", "label"), FALLS_THROUGH, ids=[p[1] for p in FALLS_THROUGH])
+def test_an_instruction_that_falls_through_keeps_the_chunk_open(
+    encoding: bytes, label: str
+) -> None:
+    result = disasm.sweep(binary(section(BODY + encoding + BODY + b"\xc3"), arch="x86-64"))
+    assert len(result.chunks) == 1, f"{label} closed the chunk: {result.chunks}"
 
 
 # `repz ret` is the GCC x86-64 epilogue, so overlooking it merges adjacent functions.
@@ -113,9 +140,10 @@ def test_a_prefixed_terminator_still_ends_the_chunk(encoding: bytes, label: str)
 
 def test_a_prefixed_ordinary_instruction_leaves_the_chunk_open() -> None:
     # `rep movsb` repeats in place, so execution does fall through to the next address.
+    # The decoder reports the prefix separately, so the mnemonic arrives here as `movsb`.
     data = b"\x31\xc0" + b"\xf3\xa4" + b"\x31\xc0" + b"\xc3"
     result = disasm.sweep(binary(section(data), arch="x86-64"))
-    assert result.chunks == (("xor", "rep movsb", "xor", "ret"),)
+    assert result.chunks == (("xor", "movsb", "xor", "ret"),)
 
 
 # ---- padding ----------------------------------------------------------------

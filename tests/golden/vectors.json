@@ -4,7 +4,7 @@
  "permutations": 256,
  "slot_bits": 2,
  "engines": {
-  "capstone": "5.0.7",
+  "iced-x86": "1.21.0",
   "lief": "1.0.0"
  },
  "files": [
@@ -13,15 +13,15 @@
    "sha256": "36c222f7ef0f9b0e28e5ecb88f4e55f9549053d011c80196f45a45cfc5d3b61a",
    "arch": "x86-64",
    "decoded": 137,
-   "chunks": 14,
-   "digest": "EO1:x86-64:56:eb7d3fbc145c9297f617c3167c2745cf0d8831afb894782891208eb40d84bbd17aa8a6039e35a5daaf3e7ab5b9a7f7f3b0249126eb4182781d82d42443a2b717"
+   "chunks": 13,
+   "digest": "EO1:x86-64:57:eb7d3fbc145c9297f617c3167c2345cf0d8831aff894782891208eb4cd84bbd17aa8a6439e35a5daaf3e7ab5b9a7f7f3b024912aeb4182781d82d42443a2b717"
   },
   {
    "name": "fixture-elf-x86",
    "sha256": "5dfb0c244e850ee14c050cfbb4663bc79dc697e9c4a1f54f4eb24a991d1e6155",
    "arch": "x86",
    "decoded": 97,
-   "chunks": 14,
+   "chunks": 13,
    "digest": "EO1:x86:38:dfba33f025de1e4cd616a1d6bbe508020e0007377757b88e91fe8de69e04ffa62689981a0c06e46aa0bef5844d98fcf0512ef166864112f9270e0e2273e77693"
   },
   {

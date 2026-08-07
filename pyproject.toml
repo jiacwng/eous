@@ -13,8 +13,7 @@ authors = [{ name = "Jiacheng Wang" }]
 
 dependencies = [
     "lief>=1.0,<1.1",
-    # 5.0.1 imports distutils, which Python 3.12 removed.
-    "capstone>=5.0.2,<5.1",
+    "iced-x86>=1.21,<2",
     "numpy>=1.24,<3",
 ]
 
@@ -55,9 +54,9 @@ select = ["E", "W", "F", "I", "UP", "B", "S"]
 files = ["src"]
 strict = true
 
-# capstone ships no py.typed marker, so its types are unavailable to the checker.
+# iced-x86 ships no py.typed marker, so its types are unavailable to the checker.
 [[tool.mypy.overrides]]
-module = "capstone.*"
+module = "iced_x86.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
