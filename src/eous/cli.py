@@ -56,6 +56,8 @@ examples:
   eous compare old.exe new.exe
   eous compare EO1:pe64:56:eb7d... EO1:pe64:3136:5cfc...
   eous match suspect.exe digests.txt
+  eous match suspect.exe digests.txt --min 80
+  eous cross digests.txt --min 40
 
 reading a comparison:
   similarity:  27.6% +/- 8.0 (19.6% to 35.6%)
@@ -120,7 +122,33 @@ def build_parser() -> argparse.ArgumentParser:
     match_command.add_argument("query", nargs="?", metavar="FILE-OR-DIGEST")
     match_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
     match_command.add_argument("--top", type=int, default=10, help="how many to print")
+    match_command.add_argument(
+        "--min",
+        type=float,
+        default=0.0,
+        dest="minimum",
+        metavar="PERCENT",
+        help="hold back anything scoring below this",
+    )
     match_command.add_argument("--json", action="store_true", help="machine-readable output")
+
+    cross_command = commands.add_parser(
+        "cross",
+        help="score every pair in a file of digests",
+        description="Score each digest in a file against every other, in the order they "
+        "were read. The file is what `eous hash` writes. Pairs are scored inside each "
+        "target, since two digests compare only when their targets match.",
+    )
+    cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
+    cross_command.add_argument(
+        "--min",
+        type=float,
+        default=0.0,
+        dest="minimum",
+        metavar="PERCENT",
+        help="hold back anything scoring below this",
+    )
+    cross_command.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
 
@@ -146,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_compare(args)
         if args.command == "match" and args.query and args.known:
             return _run_match(args)
+        if args.command == "cross" and args.known:
+            return _run_cross(args)
     except Exception as exc:
         if isinstance(exc, OSError) and exc.errno in CLOSED_PIPE:
             _quieten_stdout()
@@ -224,11 +254,10 @@ def _run_compare(args: argparse.Namespace) -> int:
     return OK
 
 
-def _read_known(path: Path, target: str) -> tuple[list[str], list[digest.Sketch], int, int]:
-    """The digests sharing the target, their labels, and what each kind of skip cost."""
+def _read_digests(path: Path) -> tuple[list[str], list[digest.Sketch], int]:
+    """Every digest in the file with its label, and the count of lines holding none."""
     labels: list[str] = []
     sketches: list[digest.Sketch] = []
-    other_target = 0
     unreadable = 0
 
     # PowerShell writes a byte-order mark on every redirect, and `eous hash > known.txt`
@@ -242,19 +271,31 @@ def _read_known(path: Path, target: str) -> tuple[list[str], list[digest.Sketch]
         except digest.DigestError:
             unreadable += 1
             continue
-        if sketch.target != target:
-            other_target += 1
-            continue
         # `hash` writes the path first, so whatever precedes the digest is the label.
         labels.append(line[: line.rindex(fields[-1])].strip() or fields[-1])
         sketches.append(sketch)
 
-    return labels, sketches, other_target, unreadable
+    return labels, sketches, unreadable
+
+
+def _read_known(path: Path, target: str) -> tuple[list[str], list[digest.Sketch], int, int]:
+    """The digests sharing the target, their labels, and what each kind of skip cost."""
+    labels, sketches, unreadable = _read_digests(path)
+    kept = [pair for pair in zip(labels, sketches, strict=True) if pair[1].target == target]
+    return (
+        [label for label, _ in kept],
+        [sketch for _, sketch in kept],
+        len(sketches) - len(kept),
+        unreadable,
+    )
 
 
 def _run_match(args: argparse.Namespace) -> int:
     if args.top < 0:
         print("eous: --top counts from zero", file=sys.stderr)
+        return USAGE
+    if not 0.0 <= args.minimum <= 100.0:
+        print("eous: --min is a percentage from 0 to 100", file=sys.stderr)
         return USAGE
 
     text = _as_digest(args.query)
@@ -282,7 +323,10 @@ def _run_match(args: argparse.Namespace) -> int:
 
     scored = digest.similarities(digest.unpack_all(sketches), digest.unpack(query))
     spread = digest.margins(scored)
-    ranked = sorted(zip(scored, spread, labels, strict=True), key=lambda row: -row[0])[: args.top]
+    order = sorted(zip(scored, spread, labels, strict=True), key=lambda row: -row[0])
+    cleared = [row for row in order if row[0] >= args.minimum]
+    ranked = cleared[: args.top]
+    below_minimum = len(order) - len(cleared)
 
     if args.json:
         print(
@@ -293,6 +337,7 @@ def _run_match(args: argparse.Namespace) -> int:
                     "target": query.target,
                     "other_target": other_target,
                     "unreadable": unreadable,
+                    "below_minimum": below_minimum,
                     "matches": [
                         {
                             "label": label,
@@ -313,6 +358,95 @@ def _run_match(args: argparse.Namespace) -> int:
         print(f"eous: {other_target} built for another target", file=sys.stderr)
     if unreadable:
         print(f"eous: {unreadable} lines held no digest", file=sys.stderr)
+    if below_minimum:
+        print(f"eous: {below_minimum} scored below {args.minimum:g}%", file=sys.stderr)
+    return OK
+
+
+def _by_target(sketches: list[digest.Sketch]) -> dict[str, list[int]]:
+    grouped: dict[str, list[int]] = {}
+    for index, sketch in enumerate(sketches):
+        grouped.setdefault(sketch.target, []).append(index)
+    return {target: rows for target, rows in grouped.items() if len(rows) > 1}
+
+
+def _run_cross(args: argparse.Namespace) -> int:
+    if not 0.0 <= args.minimum <= 100.0:
+        print("eous: --min is a percentage from 0 to 100", file=sys.stderr)
+        return USAGE
+
+    try:
+        labels, sketches, unreadable = _read_digests(args.known)
+    except OSError as exc:
+        print(f"eous: {_readable(str(args.known))}: {exc.strerror}", file=sys.stderr)
+        return REFUSED
+
+    grouped = _by_target(sketches)
+    if not grouped:
+        print(
+            f"eous: {_readable(str(args.known))}: holds no two digests of one target",
+            file=sys.stderr,
+        )
+        return USAGE
+
+    shown = [_readable(label) for label in labels]
+    targets = sorted(grouped)
+    pairs: list[dict[str, object]] = []
+    below_minimum = 0
+    total = 0
+
+    # One digest against the rows after it, so each pair is scored once and the run holds
+    # the digests alone.
+    for target in targets:
+        members = grouped[target]
+        rows = digest.unpack_all([sketches[index] for index in members])
+        for offset in range(len(members) - 1):
+            scores = digest.similarities(rows[offset + 1 :], rows[offset])
+            spread = digest.margins(scores)
+            left = members[offset]
+            total += len(scores)
+            for step, (score, margin) in enumerate(zip(scores, spread, strict=True)):
+                if score < args.minimum:
+                    below_minimum += 1
+                    continue
+                right = members[offset + 1 + step]
+                if args.json:
+                    pairs.append(
+                        {
+                            "left": labels[left],
+                            "right": labels[right],
+                            "target": target,
+                            "similarity": round(float(score), 4),
+                            "uncertainty": round(float(margin), 4),
+                        }
+                    )
+                else:
+                    print(
+                        f"{float(score):5.1f}% +/- {float(margin):3.1f}  "
+                        f"{shown[left]}  {shown[right]}"
+                    )
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "meta": _meta(),
+                    "digests": len(sketches),
+                    "targets": targets,
+                    "pairs_scored": total,
+                    "unreadable": unreadable,
+                    "below_minimum": below_minimum,
+                    "pairs": pairs,
+                },
+                indent=1,
+            )
+        )
+
+    print(f"eous: {total} pairs scored across {', '.join(targets)}", file=sys.stderr)
+    if unreadable:
+        print(f"eous: {unreadable} lines held no digest", file=sys.stderr)
+    if below_minimum:
+        print(f"eous: {below_minimum} scored below {args.minimum:g}%", file=sys.stderr)
     return OK
 
 
