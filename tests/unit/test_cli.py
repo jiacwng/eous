@@ -714,3 +714,227 @@ def test_a_negative_top_is_a_usage_error(
     known = known_file(tmp_path, CLEAN, CLEAN)
     assert cli.main(["match", str(CLEAN), str(known), "--top", "-1"]) == cli.USAGE
     assert "--top" in output.readouterr().err
+
+
+def test_match_holds_back_anything_below_the_minimum(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    weaker = text[:-32] + "0" * 32
+
+    known = known_file(tmp_path, CLEAN)
+    with known.open("a", encoding="utf-8") as handle:
+        handle.write(f"weaker  {weaker}\n")
+
+    assert cli.main(["match", str(CLEAN), str(known), "--min", "99"]) == cli.OK
+    captured = output.readouterr()
+    lines = [line for line in captured.out.splitlines() if line]
+    assert len(lines) == 1
+    assert lines[0].startswith("100.0%")
+    assert "1 scored below 99%" in captured.err
+
+
+def test_a_minimum_above_one_hundred_is_a_usage_error(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, CLEAN)
+    assert cli.main(["match", str(CLEAN), str(known), "--min", "100.1"]) == cli.USAGE
+    assert "--min" in output.readouterr().err
+
+
+def test_a_minimum_nothing_clears_prints_no_ranking(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, ELF64)
+    query = report.analyse(ELF64).digest
+    assert query is not None
+    weaker = query[:-32] + "0" * 32
+    known.write_text(f"weaker  {weaker}\n", encoding="utf-8")
+
+    assert cli.main(["match", str(ELF64), str(known), "--min", "99"]) == cli.OK
+    captured = output.readouterr()
+    assert captured.out.strip() == ""
+    assert "1 scored below 99%" in captured.err
+
+
+def test_the_minimum_keeps_an_exact_score(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN)
+    assert cli.main(["match", str(CLEAN), str(known), "--min", "100"]) == cli.OK
+    assert len([line for line in output.readouterr().out.splitlines() if line]) == 1
+
+
+def test_a_negative_minimum_is_a_usage_error(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN)
+    assert cli.main(["match", str(CLEAN), str(known), "--min", "-1"]) == cli.USAGE
+    assert "--min" in output.readouterr().err
+
+
+def test_match_json_counts_what_the_minimum_held_back(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    known = known_file(tmp_path, CLEAN)
+    with known.open("a", encoding="utf-8") as handle:
+        handle.write(f"weaker  {text[:-32] + '0' * 32}\n")
+
+    assert cli.main(["match", str(CLEAN), str(known), "--min", "99", "--json"]) == cli.OK
+    payload = json.loads(output.readouterr().out)
+    assert payload["below_minimum"] == 1
+    assert len(payload["matches"]) == 1
+
+
+def test_the_minimum_applies_before_top(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    # --top 2 on three entries where one falls below, so the count separates the two orders.
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    known = known_file(tmp_path, CLEAN, CLEAN)
+    with known.open("a", encoding="utf-8") as handle:
+        handle.write(f"weaker  {text[:-32] + '0' * 32}\n")
+
+    assert cli.main(["match", str(CLEAN), str(known), "--top", "3", "--min", "99"]) == cli.OK
+    assert len([line for line in output.readouterr().out.splitlines() if line]) == 2
+
+
+# ---- cross ------------------------------------------------------------------
+
+
+def test_cross_scores_every_pair_once(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    # Four digests give 4 x 3 / 2 = 6 pairs, and a pair counted twice would print 12.
+    known = known_file(tmp_path, CLEAN, CLEAN, CLEAN, CLEAN)
+    assert cli.main(["cross", str(known)]) == cli.OK
+    captured = output.readouterr()
+    assert len([line for line in captured.out.splitlines() if line]) == 6
+    assert "6 pairs scored across pe64" in captured.err
+
+
+def test_cross_names_both_sides_of_a_pair(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, ELF64)
+    known.write_text(
+        f"left  {report.analyse(CLEAN).digest}\nright  {report.analyse(CLEAN).digest}\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["cross", str(known)]) == cli.OK
+    line = output.readouterr().out.splitlines()[0]
+    assert line.startswith("100.0%")
+    assert line.endswith("left  right")
+
+
+# A corpus file holds every target, and a pair only forms inside one of them.
+def test_cross_pairs_inside_each_target(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    known = known_file(tmp_path, CLEAN, CLEAN, ELF64, ELF64)
+    assert cli.main(["cross", str(known)]) == cli.OK
+    captured = output.readouterr()
+    assert len([line for line in captured.out.splitlines() if line]) == 2
+    assert "2 pairs scored across elf64, pe64" in captured.err
+
+
+def test_cross_holds_back_anything_below_the_minimum(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    known = tmp_path / "known.txt"
+    known.write_text(f"a  {text}\nb  {text}\nc  {text[:-32] + '0' * 32}\n", encoding="utf-8")
+
+    assert cli.main(["cross", str(known), "--min", "99"]) == cli.OK
+    captured = output.readouterr()
+    assert len([line for line in captured.out.splitlines() if line]) == 1
+    assert "2 scored below 99%" in captured.err
+
+
+def test_cross_is_a_usage_error_when_no_target_holds_two(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, ELF64, PE32)
+    assert cli.main(["cross", str(known)]) == cli.USAGE
+    captured = output.readouterr()
+    assert captured.out == ""
+    assert "holds no two digests of one target" in captured.err
+
+
+def test_cross_counts_a_line_that_is_not_a_digest(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, CLEAN)
+    known.write_text(known.read_text(encoding="utf-8") + "notes.txt  not-a-digest\n", "utf-8")
+    assert cli.main(["cross", str(known)]) == cli.OK
+    assert "1 lines held no digest" in output.readouterr().err
+
+
+def test_cross_refuses_a_digests_file_it_cannot_read(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    absent = tmp_path / "absent.txt"
+    assert cli.main(["cross", str(absent)]) == cli.REFUSED
+    printed = output.readouterr().err
+    assert str(absent) in printed
+    assert "No such file" in printed
+
+
+def test_cross_rejects_a_minimum_outside_the_range(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, CLEAN)
+    assert cli.main(["cross", str(known), "--min", "101"]) == cli.USAGE
+    assert "--min" in output.readouterr().err
+
+
+def test_cross_json_carries_every_pair_and_its_targets(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, CLEAN, ELF64, ELF64)
+    assert cli.main(["cross", str(known), "--json"]) == cli.OK
+    payload = json.loads(output.readouterr().out)
+    assert payload["digests"] == 4
+    assert payload["targets"] == ["elf64", "pe64"]
+    assert payload["pairs_scored"] == 2
+    assert {row["target"] for row in payload["pairs"]} == {"elf64", "pe64"}
+    assert payload["pairs"][0]["similarity"] == pytest.approx(100.0)
+
+
+def test_cross_escapes_a_hostile_label(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    text = report.analyse(CLEAN).digest
+    known = tmp_path / "known.txt"
+    known.write_text(f"a\x1b[2Kb  {text}\nplain  {text}\n", encoding="utf-8")
+    assert cli.main(["cross", str(known)]) == cli.OK
+    printed = output.readouterr().out
+    assert "\x1b" not in printed
+    assert r"\x1b" in printed
+
+
+# The two commands read the same file through one reader and score on one path, so every
+# pair one of them reports must carry the identical score in the other.
+def test_cross_and_match_agree_on_every_pair(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    names = ["a", "b", "c", "d"]
+    weakened = [text[: len(text) - 8 * step] + "0" * (8 * step) for step in range(len(names))]
+    known = tmp_path / "known.txt"
+    known.write_text(
+        "".join(f"{name}  {value}\n" for name, value in zip(names, weakened, strict=True)),
+        encoding="utf-8",
+    )
+
+    assert cli.main(["cross", str(known), "--json"]) == cli.OK
+    from_cross = {
+        (row["left"], row["right"]): row["similarity"]
+        for row in json.loads(output.readouterr().out)["pairs"]
+    }
+    assert len(from_cross) == 6
+
+    for name, value in zip(names, weakened, strict=True):
+        assert cli.main(["match", value, str(known), "--top", "99", "--json"]) == cli.OK
+        for row in json.loads(output.readouterr().out)["matches"]:
+            pair = (name, row["label"])
+            if pair in from_cross:
+                assert from_cross[pair] == pytest.approx(row["similarity"])
