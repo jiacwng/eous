@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eous"
 version = "0.1.0"
-description = "Code-similarity digests for native PE and ELF binaries (x86/x86-64)"
+description = "Fuzzy hashing tool for PE and ELF binaries on x86 and x86-64"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
