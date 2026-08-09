@@ -48,34 +48,34 @@ def binary(*sections: loader.Section, arch: str = "x86") -> loader.Binary:
     )
 
 
-def mnemonics(result: disasm.SweepResult) -> list[str]:
-    return [m for chunk in result.chunks for m in chunk]
+def mnemonics(result: disasm.Disassembly) -> list[str]:
+    return [m for chunk in result.runs for m in chunk]
 
 
 # ---- chunk boundaries -------------------------------------------------------
 
 
 def test_a_terminator_ends_the_chunk() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + RET + XOR_EAX + RET)))
-    assert result.chunks == (("xor", "ret"), ("xor", "ret"))
+    result = disasm.disassemble(binary(section(XOR_EAX + RET + XOR_EAX + RET)))
+    assert result.runs == (("xor", "ret"), ("xor", "ret"))
 
 
 def test_a_decode_failure_ends_the_chunk() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + INVALID + XOR_EAX)))
-    assert ("xor",) in result.chunks
-    assert result.reports[0].stalls > 0
+    result = disasm.disassemble(binary(section(XOR_EAX + INVALID + XOR_EAX)))
+    assert ("xor",) in result.runs
+    assert result.reports[0].undecodable > 0
 
 
 def test_the_end_of_a_region_ends_the_chunk() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + PUSH_EAX)))
-    assert result.chunks == (("xor", "push"),)
+    result = disasm.disassemble(binary(section(XOR_EAX + PUSH_EAX)))
+    assert result.runs == (("xor", "push"),)
 
 
 def test_each_section_starts_a_fresh_chunk() -> None:
     first = section(XOR_EAX, name=".text", virtual_address=0x1000)
     second = section(PUSH_EAX, name=".code", virtual_address=0x2000)
-    result = disasm.sweep(binary(first, second))
-    assert result.chunks == (("xor",), ("push",))
+    result = disasm.disassemble(binary(first, second))
+    assert result.runs == (("xor",), ("push",))
 
 
 # Each instruction goes after a body and has to close the chunk.
@@ -103,8 +103,8 @@ ENDS_A_CHUNK = [
 
 @pytest.mark.parametrize(("encoding", "label"), ENDS_A_CHUNK, ids=[p[1] for p in ENDS_A_CHUNK])
 def test_control_flow_ends_the_chunk(encoding: bytes, label: str) -> None:
-    result = disasm.sweep(binary(section((BODY + encoding) * 2), arch="x86-64"))
-    assert len(result.chunks) == 2, f"{label} left the chunk open: {result.chunks}"
+    result = disasm.disassemble(binary(section((BODY + encoding) * 2), arch="x86-64"))
+    assert len(result.runs) == 2, f"{label} left the chunk open: {result.runs}"
 
 
 # int3 is usually padding between functions, so a chunk runs through it.
@@ -115,8 +115,8 @@ FALLS_THROUGH = [(b"\xcc", "int3"), (b"\xf4", "hlt"), (b"\x90", "nop")]
 def test_an_instruction_that_falls_through_keeps_the_chunk_open(
     encoding: bytes, label: str
 ) -> None:
-    result = disasm.sweep(binary(section(BODY + encoding + BODY + b"\xc3"), arch="x86-64"))
-    assert len(result.chunks) == 1, f"{label} closed the chunk: {result.chunks}"
+    result = disasm.disassemble(binary(section(BODY + encoding + BODY + b"\xc3"), arch="x86-64"))
+    assert len(result.runs) == 1, f"{label} closed the chunk: {result.runs}"
 
 
 # `repz ret` is the GCC x86-64 epilogue, so overlooking it merges adjacent functions.
@@ -135,16 +135,16 @@ PREFIXED_TERMINATORS = [
 def test_a_prefixed_terminator_still_ends_the_chunk(encoding: bytes, label: str) -> None:
     body = b"\x55\x48\x89\xe5\x31\xc0"
     data = (body + encoding) * 2
-    result = disasm.sweep(binary(section(data), arch="x86-64"))
-    assert len(result.chunks) == 2, f"{label} failed to close the chunk: {result.chunks}"
+    result = disasm.disassemble(binary(section(data), arch="x86-64"))
+    assert len(result.runs) == 2, f"{label} failed to close the chunk: {result.runs}"
 
 
 def test_a_prefixed_ordinary_instruction_leaves_the_chunk_open() -> None:
     # `rep movsb` repeats in place, so execution does fall through to the next address.
     # The decoder reports the prefix separately, so the mnemonic arrives here as `movsb`.
     data = b"\x31\xc0" + b"\xf3\xa4" + b"\x31\xc0" + b"\xc3"
-    result = disasm.sweep(binary(section(data), arch="x86-64"))
-    assert result.chunks == (("xor", "movsb", "xor", "ret"),)
+    result = disasm.disassemble(binary(section(data), arch="x86-64"))
+    assert result.runs == (("xor", "movsb", "xor", "ret"),)
 
 
 # ---- repeated instructions --------------------------------------------------
@@ -155,40 +155,40 @@ CAP = digest.NGRAM
 
 
 def test_a_long_run_is_capped_at_the_window_width() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + NOP * 20 + RET)), repeat_cap=CAP)
+    result = disasm.disassemble(binary(section(XOR_EAX + NOP * 20 + RET)), repeat_cap=CAP)
     assert mnemonics(result) == ["xor"] + ["nop"] * CAP + ["ret"]
 
 
 def test_a_run_shorter_than_the_cap_survives_intact() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + NOP * 3 + RET)), repeat_cap=CAP)
+    result = disasm.disassemble(binary(section(XOR_EAX + NOP * 3 + RET)), repeat_cap=CAP)
     assert mnemonics(result) == ["xor", "nop", "nop", "nop", "ret"]
 
 
 def test_a_run_exactly_at_the_cap_survives_intact() -> None:
-    result = disasm.sweep(binary(section(NOP * CAP + RET)), repeat_cap=CAP)
+    result = disasm.disassemble(binary(section(NOP * CAP + RET)), repeat_cap=CAP)
     assert mnemonics(result) == ["nop"] * CAP + ["ret"]
 
 
 def test_zero_bytes_are_capped_like_any_repeat() -> None:
-    result = disasm.sweep(binary(section(ZEROS * 20 + RET)), repeat_cap=CAP)
+    result = disasm.disassemble(binary(section(ZEROS * 20 + RET)), repeat_cap=CAP)
     assert mnemonics(result) == ["add"] * CAP + ["ret"]
 
 
 def test_two_runs_are_capped_separately() -> None:
-    result = disasm.sweep(binary(section(NOP * 10 + INT3 * 10 + RET)), repeat_cap=CAP)
+    result = disasm.disassemble(binary(section(NOP * 10 + INT3 * 10 + RET)), repeat_cap=CAP)
     assert mnemonics(result) == ["nop"] * CAP + ["int3"] * CAP + ["ret"]
 
 
 def test_no_cap_keeps_every_instruction() -> None:
-    result = disasm.sweep(binary(section(NOP * 20 + RET)))
+    result = disasm.disassemble(binary(section(NOP * 20 + RET)))
     assert mnemonics(result) == ["nop"] * 20 + ["ret"]
 
 
 # The cap exists because these two sets are equal, which is what lets it carry no number.
 def test_capping_gives_the_shingle_set_that_keeping_everything_gives() -> None:
     data = XOR_EAX + NOP * 40 + RET + PUSH_EAX * 9 + RET
-    capped = disasm.sweep(binary(section(data), arch="x86-64"), repeat_cap=CAP).chunks
-    whole = disasm.sweep(binary(section(data), arch="x86-64")).chunks
+    capped = disasm.disassemble(binary(section(data), arch="x86-64"), repeat_cap=CAP).runs
+    whole = disasm.disassemble(binary(section(data), arch="x86-64")).runs
     assert digest.shingles(digest.normalise(capped, "pe64")) == digest.shingles(
         digest.normalise(whole, "pe64")
     )
@@ -200,8 +200,8 @@ def test_capping_gives_the_shingle_set_that_keeping_everything_gives() -> None:
 def test_a_high_entropy_region_is_skipped_by_name() -> None:
     packed = section(os.urandom(8192))
     assert packed.entropy > loader.ENTROPY_THRESHOLD
-    result = disasm.sweep(binary(packed))
-    assert result.chunks == ()
+    result = disasm.disassemble(binary(packed))
+    assert result.runs == ()
     assert result.reports[0].skipped == disasm.ENTROPY
 
 
@@ -210,43 +210,43 @@ def test_a_high_entropy_region_is_skipped_by_name() -> None:
 def test_a_section_exactly_at_the_threshold_is_skipped() -> None:
     edge = section(bytes(range(128)) * 64)
     assert edge.entropy == loader.ENTROPY_THRESHOLD
-    result = disasm.sweep(binary(edge))
+    result = disasm.disassemble(binary(edge))
     assert result.reports[0].skipped == disasm.ENTROPY
 
 
 def test_a_section_just_under_the_threshold_is_disassembled() -> None:
     edge = section(bytes(range(127)) * 64)
     assert edge.entropy < loader.ENTROPY_THRESHOLD
-    result = disasm.sweep(binary(edge))
+    result = disasm.disassemble(binary(edge))
     assert result.reports[0].skipped is None
 
 
 def test_an_empty_region_is_skipped_by_name() -> None:
-    result = disasm.sweep(binary(section(b"")))
+    result = disasm.disassemble(binary(section(b"")))
     assert result.reports[0].skipped == disasm.EMPTY
 
 
 def test_a_region_of_pure_noise_is_skipped_for_stalls() -> None:
-    result = disasm.sweep(binary(section(INVALID * 200)), max_stalls=10)
-    assert result.reports[0].skipped == disasm.STALLED
+    result = disasm.disassemble(binary(section(INVALID * 200)), max_undecodable=10)
+    assert result.reports[0].skipped == disasm.UNDECODABLE
 
 
 def test_the_instruction_budget_is_reported_by_name() -> None:
-    result = disasm.sweep(binary(section(PUSH_EAX * 100)), max_instructions=10)
+    result = disasm.disassemble(binary(section(PUSH_EAX * 100)), max_instructions=10)
     assert result.reports[0].skipped == disasm.BUDGET
     assert result.reports[0].decoded == 10
 
 
 def test_a_swept_region_leaves_its_skip_reason_empty() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + RET)))
+    result = disasm.disassemble(binary(section(XOR_EAX + RET)))
     assert result.reports[0].skipped is None
 
 
 def test_non_executable_sections_are_left_alone() -> None:
     data = section(XOR_EAX + RET, name=".rdata", executable=False)
-    result = disasm.sweep(binary(data))
+    result = disasm.disassemble(binary(data))
     assert result.reports == ()
-    assert result.chunks == ()
+    assert result.runs == ()
 
 
 # ---- the limits come from the section size ----------------------------------
@@ -255,22 +255,22 @@ def test_non_executable_sections_are_left_alone() -> None:
 # The old fixed limits stopped one clean binary in five early, and no test caught it.
 def test_the_default_bounds_do_not_truncate_a_run_of_one_byte_instructions() -> None:
     # Worst case: every instruction is one byte.
-    result = disasm.sweep(binary(section(PUSH_EAX * 5000 + RET)))
+    result = disasm.disassemble(binary(section(PUSH_EAX * 5000 + RET)))
     assert result.reports[0].skipped is None
     assert result.reports[0].decoded == 5001
 
 
 def test_the_default_bounds_do_not_truncate_a_region_that_never_decodes() -> None:
     # Worst case: every byte fails to decode.
-    result = disasm.sweep(binary(section(INVALID * 2000)))
+    result = disasm.disassemble(binary(section(INVALID * 2000)))
     assert result.reports[0].skipped is None
-    assert result.reports[0].stalls == 4000
+    assert result.reports[0].undecodable == 4000
 
 
 def test_a_digest_taken_with_the_defaults_holds_the_whole_region() -> None:
     body = (XOR_EAX + PUSH_EAX * 6 + RET) * 400
-    whole = disasm.sweep(binary(section(body)))
-    halved = disasm.sweep(binary(section(body)), max_instructions=whole.total_decoded // 2)
+    whole = disasm.disassemble(binary(section(body)))
+    halved = disasm.disassemble(binary(section(body)), max_instructions=whole.total_decoded // 2)
     assert whole.reports[0].skipped is None
     assert halved.reports[0].skipped == disasm.BUDGET
     assert whole.total_decoded > halved.total_decoded
@@ -283,16 +283,16 @@ def test_a_digest_taken_with_the_defaults_holds_the_whole_region() -> None:
 def test_the_budget_applies_to_each_region_separately() -> None:
     first = section(PUSH_EAX * 20, name=".a", virtual_address=0x1000)
     second = section(PUSH_EAX * 20, name=".b", virtual_address=0x2000)
-    result = disasm.sweep(binary(first, second), max_instructions=10)
+    result = disasm.disassemble(binary(first, second), max_instructions=10)
     assert [r.decoded for r in result.reports] == [10, 10]
 
 
 def test_section_order_leaves_the_result_unchanged() -> None:
     low = section(XOR_EAX + RET, name=".a", virtual_address=0x1000)
     high = section(PUSH_EAX + RET, name=".b", virtual_address=0x2000)
-    forward = disasm.sweep(binary(low, high))
-    backward = disasm.sweep(binary(high, low))
-    assert forward.chunks == backward.chunks
+    forward = disasm.disassemble(binary(low, high))
+    backward = disasm.disassemble(binary(high, low))
+    assert forward.runs == backward.runs
 
 
 # ---- results ----------------------------------------------------------------
@@ -301,24 +301,24 @@ def test_section_order_leaves_the_result_unchanged() -> None:
 def test_total_decoded_sums_the_regions() -> None:
     first = section(XOR_EAX + RET, name=".a", virtual_address=0x1000)
     second = section(PUSH_EAX + RET, name=".b", virtual_address=0x2000)
-    result = disasm.sweep(binary(first, second))
+    result = disasm.disassemble(binary(first, second))
     assert result.total_decoded == sum(r.decoded for r in result.reports)
 
 
 def test_every_region_gets_a_named_report() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + RET, name=".text")))
+    result = disasm.disassemble(binary(section(XOR_EAX + RET, name=".text")))
     assert [r.name for r in result.reports] == [".text"]
 
 
 def test_every_region_compressed_gives_a_full_share() -> None:
     packed = section(os.urandom(8192))
-    assert disasm.sweep(binary(packed)).compressed_share == 1.0
+    assert disasm.disassemble(binary(packed)).compressed_share == 1.0
 
 
 def test_a_substantial_readable_region_lowers_the_share() -> None:
     packed = section(os.urandom(8192), name=".a", virtual_address=0x1000)
     clean = section((XOR_EAX + RET) * 4096, name=".b", virtual_address=0x2000)
-    assert disasm.sweep(binary(packed, clean)).compressed_share < 0.5
+    assert disasm.disassemble(binary(packed, clean)).compressed_share < 0.5
 
 
 # A section holds at most log2(size) bits of entropy, so a tiny readable region can sit
@@ -326,25 +326,25 @@ def test_a_substantial_readable_region_lowers_the_share() -> None:
 def test_a_tiny_readable_region_leaves_the_share_high() -> None:
     packed = section(os.urandom(8192), name=".a", virtual_address=0x1000)
     clean = section(XOR_EAX + RET, name=".b", virtual_address=0x2000)
-    assert disasm.sweep(binary(packed, clean)).compressed_share > 0.99
+    assert disasm.disassemble(binary(packed, clean)).compressed_share > 0.99
 
 
 def test_a_binary_holding_only_data_has_no_share() -> None:
     quiet = section(XOR_EAX, name=".rdata", executable=False)
-    assert disasm.sweep(binary(quiet)).compressed_share == 0.0
+    assert disasm.disassemble(binary(quiet)).compressed_share == 0.0
 
 
 def test_an_empty_region_has_no_share() -> None:
-    assert disasm.sweep(binary(section(b""))).compressed_share == 0.0
+    assert disasm.disassemble(binary(section(b""))).compressed_share == 0.0
 
 
 def test_a_readable_binary_has_no_compressed_share() -> None:
     clean = section((XOR_EAX + RET) * 64)
-    assert disasm.sweep(binary(clean)).compressed_share == 0.0
+    assert disasm.disassemble(binary(clean)).compressed_share == 0.0
 
 
 def test_results_are_frozen() -> None:
-    result = disasm.sweep(binary(section(XOR_EAX + RET)))
+    result = disasm.disassemble(binary(section(XOR_EAX + RET)))
     with pytest.raises(AttributeError):
         result.total_decoded = 0  # type: ignore[misc]
     with pytest.raises(AttributeError):
@@ -356,13 +356,13 @@ def test_results_are_frozen() -> None:
 
 def test_both_architectures_decode() -> None:
     for arch in ("x86", "x86-64"):
-        result = disasm.sweep(binary(section(XOR_EAX + RET), arch=arch))
+        result = disasm.disassemble(binary(section(XOR_EAX + RET), arch=arch))
         assert mnemonics(result) == ["xor", "ret"]
 
 
 def test_an_unknown_architecture_raises() -> None:
     with pytest.raises(disasm.DisasmError, match="mips"):
-        disasm.sweep(binary(section(XOR_EAX), arch="mips"))
+        disasm.disassemble(binary(section(XOR_EAX), arch="mips"))
 
 
 # ---- adversarial addresses --------------------------------------------------
@@ -370,18 +370,22 @@ def test_an_unknown_architecture_raises() -> None:
 
 def test_a_section_addressed_near_the_top_of_memory_still_sweeps() -> None:
     data = (XOR_EAX + RET) * 40
-    low = disasm.sweep(binary(section(data, virtual_address=0x1000), arch="x86-64"))
-    high = disasm.sweep(binary(section(data, virtual_address=0xFFFFFFFFFFFFFFF8), arch="x86-64"))
-    assert high.chunks == low.chunks
-    assert high.reports[0].stalls == 0
+    low = disasm.disassemble(binary(section(data, virtual_address=0x1000), arch="x86-64"))
+    high = disasm.disassemble(
+        binary(section(data, virtual_address=0xFFFFFFFFFFFFFFF8), arch="x86-64")
+    )
+    assert high.runs == low.runs
+    assert high.reports[0].undecodable == 0
     assert high.reports[0].skipped is None
 
 
 def test_a_wrapping_address_decodes_every_instruction() -> None:
     data = NOP * 64 + RET
-    result = disasm.sweep(binary(section(data, virtual_address=0xFFFFFFFFFFFFFF00), arch="x86-64"))
+    result = disasm.disassemble(
+        binary(section(data, virtual_address=0xFFFFFFFFFFFFFF00), arch="x86-64")
+    )
     assert result.total_decoded == 65
-    assert result.reports[0].stalls == 0
+    assert result.reports[0].undecodable == 0
 
 
 # ---- the real fixtures ------------------------------------------------------
@@ -393,10 +397,10 @@ def test_a_wrapping_address_decodes_every_instruction() -> None:
 )
 def test_every_fixture_sweeps(name: str) -> None:
     # The smallest fixture is a stripped 2,328-byte ELF that decodes 97 instructions.
-    result = disasm.sweep(loader.load(FIXTURES / name))
+    result = disasm.disassemble(loader.load(FIXTURES / name))
     assert result.total_decoded > 50
-    assert result.chunks
-    assert all(chunk for chunk in result.chunks)
+    assert result.runs
+    assert all(chunk for chunk in result.runs)
     assert all(report.skipped is None for report in result.reports)
 
 
@@ -422,9 +426,9 @@ def test_a_stripped_elf_sweeps_to_real_mnemonics(tmp_path: Path) -> None:
     target = tmp_path / "stripped.elf"
     target.write_bytes(make_stripped_elf((XOR_EAX + RET) * 20))
 
-    result = disasm.sweep(loader.load(target))
+    result = disasm.disassemble(loader.load(target))
     assert result.total_decoded == 40
-    assert result.chunks == (("xor", "ret"),) * 20
+    assert result.runs == (("xor", "ret"),) * 20
     assert result.reports[0].skipped is None
 
 
@@ -433,18 +437,20 @@ def test_a_stripped_elf_sweeps_the_same_way_as_a_sectioned_one(tmp_path: Path) -
     target = tmp_path / "stripped.elf"
     target.write_bytes(make_stripped_elf(code))
 
-    from_segment = disasm.sweep(loader.load(target))
-    from_section = disasm.sweep(binary(section(code, virtual_address=0x400078), arch="x86-64"))
-    assert from_segment.chunks == from_section.chunks
+    from_segment = disasm.disassemble(loader.load(target))
+    from_section = disasm.disassemble(
+        binary(section(code, virtual_address=0x400078), arch="x86-64")
+    )
+    assert from_segment.runs == from_section.runs
 
 
 def test_a_fixture_sweeps_the_same_way_twice() -> None:
     path = FIXTURES / "fixture-elf-x64"
-    assert disasm.sweep(loader.load(path)).chunks == disasm.sweep(loader.load(path)).chunks
+    assert disasm.disassemble(loader.load(path)).runs == disasm.disassemble(loader.load(path)).runs
 
 
 def test_fixture_chunks_are_short() -> None:
     # Measured: these fixtures average 7 to 10, real corpus binaries 4.61. T-1's subject.
-    result = disasm.sweep(loader.load(FIXTURES / "fixture-pe-x64.exe"))
-    mean = result.total_decoded / len(result.chunks)
+    result = disasm.disassemble(loader.load(FIXTURES / "fixture-pe-x64.exe"))
+    mean = result.total_decoded / len(result.runs)
     assert 1.0 < mean < 20.0

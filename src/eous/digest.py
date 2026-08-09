@@ -1,4 +1,4 @@
-# Turns chunks of mnemonics into an EO1 digest, and scores digests against each other.
+# Turns straight-line runs of mnemonics into an EO1 digest, and scores digests against each other.
 #
 # A digest reads EO1:target:cardinality:sketch, and every constant below shapes it.
 
@@ -29,6 +29,8 @@ SEPARATOR = b"\x1f"
 OOV = "<oov>"
 
 MAX_CONTAINMENT_RATIO = 4.0
+
+MAX_CARDINALITY = 2**53
 
 PERMUTATION_PERSON = b"eous-prm"
 SHINGLE_PERSON = b"eous-ng"
@@ -160,9 +162,9 @@ def instruction_set(target: str) -> str:
     return "x86" if target.endswith("32") else "x86-64"
 
 
-def normalise(chunks: tuple[tuple[str, ...], ...], target: str) -> list[list[str]]:
+def normalise(runs: tuple[tuple[str, ...], ...], target: str) -> list[list[str]]:
     vocab = load_vocab(instruction_set(target))
-    return [[vocab.root_of(mnemonic) or OOV for mnemonic in chunk] for chunk in chunks]
+    return [[vocab.root_of(mnemonic) or OOV for mnemonic in run] for run in runs]
 
 
 def shingles(runs: list[list[str]]) -> set[tuple[str, ...]]:
@@ -190,8 +192,8 @@ def pack(grams: set[tuple[str, ...]]) -> int:
     return accumulated
 
 
-def digest(chunks: tuple[tuple[str, ...], ...], target: str) -> str | None:
-    grams = shingles(normalise(chunks, target))
+def digest(runs: tuple[tuple[str, ...], ...], target: str) -> str | None:
+    grams = shingles(normalise(runs, target))
     if not grams:
         # Too little readable code to describe, so the caller names the cause instead.
         return None
@@ -209,8 +211,10 @@ def parse(text: str) -> Sketch:
         raise DigestError(f"expected version {VERSION}, found {version!r}")
     if target not in TARGETS:
         raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
-    if not cardinality.isdigit():
+    if not (cardinality.isascii() and cardinality.isdigit()):
         raise DigestError(f"cardinality {cardinality!r} is a non-negative integer")
+    if int(cardinality) > MAX_CARDINALITY:
+        raise DigestError(f"cardinality {cardinality!r} exceeds {MAX_CARDINALITY}")
     if not SKETCH_PATTERN.match(body):
         raise DigestError(f"sketch is {SKETCH_HEX} lower-case hex characters")
 
@@ -259,7 +263,7 @@ def compare(left: Sketch | str, right: Sketch | str) -> Scores:
     if first.version != second.version:
         raise DigestError(f"versions differ: {first.version} and {second.version}")
     # Rebuilding for another target changes which instructions appear, so the score lands
-    # where unrelated pairs already sit. Measured in local/roadmap.md.
+    # where unrelated pairs already sit.
     if first.target != second.target:
         raise DigestError(f"different targets: {first.target} and {second.target}")
 

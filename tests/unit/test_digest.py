@@ -220,6 +220,33 @@ def test_wholly_unrecognisable_code_still_yields_a_digest() -> None:
     assert digest.parse(text).cardinality == 1
 
 
+# `'²'.isdigit()` is true and `int('²')` raises, so a numeric character that is not an ASCII
+# digit used to escape DigestError and reach the caller as an internal error.
+def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
+    text = digest.digest((chunk(*(["mov"] * 40)),), "pe64")
+    assert text is not None
+    body = text.rsplit(":", 1)[1]
+    with pytest.raises(DigestError, match="non-negative integer"):
+        digest.parse(f"EO1:pe64:²:{body}")
+
+
+def test_a_cardinality_beyond_float_precision_is_refused() -> None:
+    text = digest.digest((chunk(*(["mov"] * 40)),), "pe64")
+    assert text is not None
+    body = text.rsplit(":", 1)[1]
+    with pytest.raises(DigestError, match="exceeds"):
+        digest.parse(f"EO1:pe64:{digest.MAX_CARDINALITY + 1}:{body}")
+
+
+def test_the_largest_representable_cardinality_parses() -> None:
+    text = digest.digest((chunk(*(["mov"] * 40)),), "pe64")
+    assert text is not None
+    body = text.rsplit(":", 1)[1]
+    assert digest.parse(f"EO1:pe64:{digest.MAX_CARDINALITY}:{body}").cardinality == (
+        digest.MAX_CARDINALITY
+    )
+
+
 def test_too_little_code_yields_no_digest() -> None:
     assert digest.digest((chunk("mov", "ret"),), "pe64") is None
 
@@ -459,7 +486,7 @@ def test_the_margin_of_error_widens_with_the_size_gap() -> None:
 )
 def test_every_fixture_digests(name: str) -> None:
     binary = loader.load(FIXTURES / name)
-    text = digest.digest(disasm.sweep(binary).chunks, binary.target)
+    text = digest.digest(disasm.disassemble(binary).runs, binary.target)
     assert text is not None
     assert digest.parse(text).target == binary.target
 
@@ -470,21 +497,21 @@ def test_every_fixture_digests(name: str) -> None:
 )
 def test_the_array_path_matches_the_reference_on_every_fixture(name: str) -> None:
     binary = loader.load(FIXTURES / name)
-    grams = digest.shingles(digest.normalise(disasm.sweep(binary).chunks, binary.target))
+    grams = digest.shingles(digest.normalise(disasm.disassemble(binary).runs, binary.target))
     assert digest.pack(grams) == reference_pack(grams)
 
 
 def test_a_fixture_digests_the_same_way_twice() -> None:
     binary = loader.load(FIXTURES / "fixture-pe-x64.exe")
-    chunks = disasm.sweep(binary).chunks
+    chunks = disasm.disassemble(binary).runs
     assert digest.digest(chunks, binary.target) == digest.digest(chunks, binary.target)
 
 
 def test_the_two_pe_fixtures_refuse_to_compare() -> None:
     left = loader.load(FIXTURES / "fixture-pe-x64.exe")
     right = loader.load(FIXTURES / "fixture-pe-x86.exe")
-    a = digest.digest(disasm.sweep(left).chunks, left.target)
-    b = digest.digest(disasm.sweep(right).chunks, right.target)
+    a = digest.digest(disasm.disassemble(left).runs, left.target)
+    b = digest.digest(disasm.disassemble(right).runs, right.target)
     assert a is not None and b is not None
     with pytest.raises(DigestError, match="different targets"):
         digest.compare(a, b)
@@ -493,8 +520,8 @@ def test_the_two_pe_fixtures_refuse_to_compare() -> None:
 def test_one_width_across_formats_refuses_to_compare() -> None:
     pe = loader.load(FIXTURES / "fixture-pe-x64.exe")
     elf = loader.load(FIXTURES / "fixture-elf-x64")
-    a = digest.digest(disasm.sweep(pe).chunks, pe.target)
-    b = digest.digest(disasm.sweep(elf).chunks, elf.target)
+    a = digest.digest(disasm.disassemble(pe).runs, pe.target)
+    b = digest.digest(disasm.disassemble(elf).runs, elf.target)
     assert a is not None and b is not None
     with pytest.raises(DigestError, match="different targets"):
         digest.compare(a, b)

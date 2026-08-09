@@ -1,7 +1,7 @@
-# Sweeps the executable sections of a binary into chunks of mnemonics.
+# Disassembles the executable sections of a binary into straight-line runs of mnemonics.
 #
-# A chunk is a straight-line run of instructions. It ends wherever control leaves that
-# line, so the shingles built from it later describe paths the program really takes.
+# A run ends wherever control leaves the straight line, so the shingles built from it later
+# describe paths the program really takes.
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from eous.loader import BITS, ENTROPY_THRESHOLD, Binary
 ENTROPY = "ENTROPY"
 EMPTY = "EMPTY"
 BUDGET = "BUDGET"
-STALLED = "STALLED"
+UNDECODABLE = "UNDECODABLE"
 
 CONTINUES = frozenset({FlowControl.NEXT, FlowControl.INTERRUPT})
 
@@ -30,18 +30,18 @@ class DisasmError(Exception):
 
 
 @dataclass(frozen=True)
-class RegionReport:
+class SectionReport:
     name: str
     decoded: int
     skipped: str | None
-    stalls: int
+    undecodable: int
     size: int
 
 
 @dataclass(frozen=True)
-class SweepResult:
-    chunks: tuple[tuple[str, ...], ...]
-    reports: tuple[RegionReport, ...]
+class Disassembly:
+    runs: tuple[tuple[str, ...], ...]
+    reports: tuple[SectionReport, ...]
     total_decoded: int
 
     @property
@@ -53,82 +53,85 @@ class SweepResult:
         return sum(r.size for r in self.reports if r.skipped == ENTROPY) / total
 
 
-def sweep(
+def disassemble(
     binary: Binary,
     *,
     max_instructions: int | None = None,
-    max_stalls: int | None = None,
+    max_undecodable: int | None = None,
     repeat_cap: int | None = None,
     minimum_run: int = 1,
-) -> SweepResult:
+) -> Disassembly:
     bitness = BITS.get(binary.arch)
     if bitness is None:
         raise DisasmError(f"no decoder for architecture {binary.arch}")
 
-    chunks: list[tuple[str, ...]] = []
-    reports: list[RegionReport] = []
+    runs: list[tuple[str, ...]] = []
+    reports: list[SectionReport] = []
 
     for section in binary.executable_sections:
         if not section.data:
-            reports.append(RegionReport(section.name, 0, EMPTY, 0, len(section.data)))
+            reports.append(SectionReport(section.name, 0, EMPTY, 0, len(section.data)))
             continue
 
         if section.entropy >= ENTROPY_THRESHOLD:
-            reports.append(RegionReport(section.name, 0, ENTROPY, 0, len(section.data)))
+            reports.append(SectionReport(section.name, 0, ENTROPY, 0, len(section.data)))
             continue
 
-        region_chunks, report = _sweep_region(
+        section_runs, report = _disassemble_section(
             data=section.data,
             name=section.name,
             bitness=bitness,
             max_instructions=max_instructions,
-            max_stalls=max_stalls,
+            max_undecodable=max_undecodable,
             repeat_cap=repeat_cap,
             minimum_run=minimum_run,
         )
-        chunks.extend(region_chunks)
+        runs.extend(section_runs)
         reports.append(report)
 
-    return SweepResult(
-        chunks=tuple(chunks),
+    return Disassembly(
+        runs=tuple(runs),
         reports=tuple(reports),
         total_decoded=sum(report.decoded for report in reports),
     )
 
 
-def _sweep_region(
+def _disassemble_section(
     data: bytes,
     name: str,
     bitness: int,
     max_instructions: int | None,
-    max_stalls: int | None,
+    max_undecodable: int | None,
     repeat_cap: int | None,
     minimum_run: int,
-) -> tuple[list[tuple[str, ...]], RegionReport]:
-
+) -> tuple[list[tuple[str, ...]], SectionReport]:
     decoder = Decoder(bitness, data)
     budget = len(data) if max_instructions is None else max_instructions
-    ceiling = len(data) if max_stalls is None else max_stalls
+    ceiling = len(data) if max_undecodable is None else max_undecodable
 
-    chunks: list[tuple[str, ...]] = []
+    runs: list[tuple[str, ...]] = []
     current: list[str] = []
     decoded = 0
-    stalls = 0
+    undecodable = 0
     skipped: str | None = None
+    repeated = 0
+    previous = ""
 
-    def close_chunk() -> None:
+    def close_run() -> None:
+        nonlocal repeated, previous
         if current:
-            kept = current if repeat_cap is None else _cap_repeats(current, repeat_cap)
-            if len(kept) >= minimum_run:
-                chunks.append(tuple(kept))
+            if len(current) >= minimum_run:
+                runs.append(tuple(current))
             current.clear()
+        repeated = 0
+        previous = ""
 
     while decoder.can_decode:
         if decoded >= budget:
             skipped = BUDGET
             break
-        if stalls >= ceiling:
-            skipped = STALLED
+        if undecodable >= ceiling:
+            skipped = UNDECODABLE
             break
 
         position = decoder.position
@@ -137,33 +140,21 @@ def _sweep_region(
         if instruction.is_invalid:
             # Resume one byte on, so an undecodable byte costs exactly one byte.
             decoder.position = position + 1
-            close_chunk()
-            stalls += 1
+            close_run()
+            undecodable += 1
             continue
 
-        current.append(MNEMONICS[instruction.mnemonic])
+        mnemonic = MNEMONICS[instruction.mnemonic]
+        repeated = repeated + 1 if mnemonic == previous else 1
+        previous = mnemonic
+        if repeat_cap is None or repeated <= repeat_cap:
+            current.append(mnemonic)
         decoded += 1
 
         if instruction.flow_control not in CONTINUES:
-            close_chunk()
+            close_run()
 
-    close_chunk()
-    return chunks, RegionReport(
-        name=name, decoded=decoded, skipped=skipped, stalls=stalls, size=len(data)
+    close_run()
+    return runs, SectionReport(
+        name=name, decoded=decoded, skipped=skipped, undecodable=undecodable, size=len(data)
     )
-
-
-def _cap_repeats(mnemonics: list[str], cap: int) -> list[str]:
-    # Filler between functions is one instruction repeated. Windows past the cap repeat a
-    # window already seen, so keeping them changes nothing and costs memory.
-    kept: list[str] = []
-    index = 0
-
-    while index < len(mnemonics):
-        end = index
-        while end < len(mnemonics) and mnemonics[end] == mnemonics[index]:
-            end += 1
-        kept.extend(mnemonics[index : min(end, index + cap)])
-        index = end
-
-    return kept

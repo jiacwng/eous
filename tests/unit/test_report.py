@@ -53,20 +53,20 @@ def test_a_missing_file_refuses_as_unreadable(tmp_path: Path) -> None:
     result = report.analyse(tmp_path / "absent.bin")
     assert result.digest is None
     assert result.refusal is not None
-    assert result.refusal.gate == report.UNREADABLE
+    assert result.refusal.reason == report.UNREADABLE
 
 
 def test_junk_bytes_refuse_as_unreadable(tmp_path: Path) -> None:
     target = tmp_path / "junk.bin"
     target.write_bytes(b"plain text, forever" * 20)
-    assert report.analyse(target).refusal.gate == report.UNREADABLE
+    assert report.analyse(target).refusal.reason == report.UNREADABLE
 
 
 def test_macho_refuses_by_format_and_names_it(tmp_path: Path) -> None:
     target = tmp_path / "thing.macho"
     target.write_bytes(struct.pack("<I", 0xFEEDFACF) + bytes(4096))
     refusal = report.analyse(target).refusal
-    assert refusal.gate == report.UNSUPPORTED_FORMAT
+    assert refusal.reason == report.UNSUPPORTED_FORMAT
     assert "mach" in refusal.detail.lower()
 
 
@@ -77,8 +77,21 @@ def test_other_architectures_refuse_by_arch_and_name_it(
     target = tmp_path / f"{label}.elf"
     target.write_bytes(elf_header(machine))
     refusal = report.analyse(target).refusal
-    assert refusal.gate == report.UNSUPPORTED_ARCH
+    assert refusal.reason == report.UNSUPPORTED_ARCH
     assert refusal.detail
+
+
+# ARM64. The ELF path above and this one are the two halves of the same documented refusal.
+def test_a_pe_for_another_architecture_refuses_by_arch(tmp_path: Path) -> None:
+    raw = bytearray(PE64.read_bytes())
+    header = struct.unpack_from("<I", raw, 0x3C)[0]
+    struct.pack_into("<H", raw, header + 4, 0xAA64)
+    target = tmp_path / "arm64.exe"
+    target.write_bytes(bytes(raw))
+
+    refusal = report.analyse(target).refusal
+    assert refusal is not None
+    assert refusal.reason == report.UNSUPPORTED_ARCH
 
 
 def compressed_copy(
@@ -112,13 +125,13 @@ def test_a_compressed_binary_refuses_as_packed(tmp_path: Path, name: str) -> Non
     result = report.analyse(target)
     assert result.digest is None
     assert result.refusal is not None
-    assert result.refusal.gate == report.PACKED
+    assert result.refusal.reason == report.PACKED
     assert result.refusal.detail.endswith("of executable code is compressed")
     assert result.refusal.detail.startswith(("9", "100"))
 
 
 @pytest.mark.parametrize("name", CLEAN)
-def test_a_clean_binary_stays_clear_of_the_packed_gate(name: str) -> None:
+def test_a_clean_binary_is_not_refused_as_packed(name: str) -> None:
     assert report.analyse(FIXTURES / name).refusal is None
 
 
@@ -147,7 +160,8 @@ def posed_as(monkeypatch: pytest.MonkeyPatch, sections: tuple[loader.Section, ..
     monkeypatch.setattr(report.loader, "load", lambda _: posed)
 
 
-# No clean file in 15,435 has a writable code section.
+# No clean PE in 15,435 has a writable code section. The rule is PE-only, because `loader`
+# synthesises ELF sections from segments, where read-write-execute is ordinary.
 def test_a_writable_executable_section_refuses_as_packed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,11 +183,73 @@ def test_a_writable_executable_section_refuses_as_packed(
     result = report.analyse(PE64)
     assert result.digest is None
     assert result.refusal is not None
-    assert result.refusal.gate == report.PACKED
+    assert result.refusal.reason == report.PACKED
     assert "writable" in result.refusal.detail
 
 
-def test_a_binary_with_no_executable_section_refuses_as_packed(
+# `loader` synthesises ELF sections from segments, and a read-write-execute segment is
+# ordinary there. The rule stays with the PE evidence it was measured on.
+def test_a_writable_executable_segment_keeps_an_elf_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = report.loader.load(FIXTURES / "fixture-elf-x64")
+    posed = loader.Binary(
+        path=source.path,
+        format=source.format,
+        arch=source.arch,
+        bits=source.bits,
+        entry_point=source.entry_point,
+        sections=tuple(
+            loader.Section(
+                name=s.name,
+                virtual_address=s.virtual_address,
+                virtual_size=s.virtual_size,
+                raw_size=s.raw_size,
+                executable=s.executable,
+                writable=True if s.executable else s.writable,
+                data=s.data,
+            )
+            for s in source.sections
+        ),
+        is_il_only=False,
+        has_managed_native=False,
+    )
+    monkeypatch.setattr(report.loader, "load", lambda _: posed)
+
+    result = report.analyse(FIXTURES / "fixture-elf-x64")
+    assert result.refusal is None
+    assert result.digest is not None
+
+
+def test_code_too_short_to_shingle_refuses_as_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
+    executable = next(s for s in source.sections if s.executable)
+    posed_as(
+        monkeypatch,
+        (
+            loader.Section(
+                name=executable.name,
+                virtual_address=executable.virtual_address,
+                virtual_size=executable.virtual_size,
+                raw_size=2,
+                executable=True,
+                writable=False,
+                data=b"\xc3\xc3",
+            ),
+        ),
+    )
+
+    result = report.analyse(PE64)
+    assert result.digest is None
+    assert result.refusal is not None
+    assert result.refusal.reason == report.UNREADABLE
+    assert result.refusal.detail == "too little readable code"
+
+
+# A resource-only library carries no code and is not packed, so it gets its own name.
+def test_a_binary_with_no_executable_section_refuses_as_no_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
@@ -182,7 +258,7 @@ def test_a_binary_with_no_executable_section_refuses_as_packed(
     result = report.analyse(PE64)
     assert result.digest is None
     assert result.refusal is not None
-    assert result.refusal.gate == report.PACKED
+    assert result.refusal.reason == report.NO_CODE
     assert result.refusal.detail == "no executable section"
 
 
@@ -222,7 +298,7 @@ def test_an_il_only_assembly_refuses_as_managed(monkeypatch: pytest.MonkeyPatch)
     result = report.analyse(PE64)
     assert result.digest is None
     assert result.refusal is not None
-    assert result.refusal.gate == report.MANAGED
+    assert result.refusal.reason == report.MANAGED
     assert result.refusal.detail == "il only, no native code"
 
 
@@ -239,16 +315,16 @@ def test_an_assembly_carrying_native_code_still_digests(monkeypatch: pytest.Monk
 # Managed is judged before the sweep, so an il-only assembly never reports as packed.
 def test_managed_is_judged_before_packed(monkeypatch: pytest.MonkeyPatch) -> None:
     managed(monkeypatch, il_only=True, native=False, entropy_bytes=random.randbytes(8192))
-    assert report.analyse(PE64).refusal.gate == report.MANAGED
+    assert report.analyse(PE64).refusal.reason == report.MANAGED
 
 
-def test_the_managed_gate_runs_no_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_managed_refusal_disassembles_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     def unreachable(*args: object, **kwargs: object) -> object:
-        raise AssertionError("the sweep ran")
+        raise AssertionError("the disassembler ran")
 
     managed(monkeypatch, il_only=True, native=False)
-    monkeypatch.setattr(report.disasm, "sweep", unreachable)
-    assert report.analyse(PE64).refusal.gate == report.MANAGED
+    monkeypatch.setattr(report.disasm, "disassemble", unreachable)
+    assert report.analyse(PE64).refusal.reason == report.MANAGED
 
 
 @pytest.mark.parametrize(
@@ -278,7 +354,7 @@ def test_a_refusal_detail_holds_the_cause_alone(
 def test_format_is_judged_before_architecture(tmp_path: Path) -> None:
     target = tmp_path / "arm64.macho"
     target.write_bytes(struct.pack("<I", 0xFEEDFACF) + bytes(4096))
-    assert report.analyse(target).refusal.gate == report.UNSUPPORTED_FORMAT
+    assert report.analyse(target).refusal.reason == report.UNSUPPORTED_FORMAT
 
 
 def test_results_are_frozen() -> None:
@@ -290,7 +366,7 @@ def test_results_are_frozen() -> None:
 def test_a_refusal_is_frozen() -> None:
     refusal = report.Refusal(report.UNREADABLE, "gone")
     with pytest.raises(AttributeError):
-        refusal.gate = "other"  # type: ignore[misc]
+        refusal.reason = "other"  # type: ignore[misc]
 
 
 def test_analysis_repeats(tmp_path: Path) -> None:
