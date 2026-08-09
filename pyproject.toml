@@ -4,12 +4,38 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eous"
-version = "0.0.1"
+version = "0.1.0"
 description = "Code-similarity digests for native PE and ELF binaries (x86/x86-64)"
+readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Jiacheng Wang" }]
+keywords = [
+    "binary-analysis",
+    "similarity",
+    "minhash",
+    "fuzzy-hashing",
+    "disassembly",
+    "pe",
+    "elf",
+    "malware",
+]
+# A License classifier alongside the PEP 639 expression above is rejected at upload.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+    "Typing :: Typed",
+]
 
 dependencies = [
     "lief>=1.0,<1.1",
@@ -18,6 +44,7 @@ dependencies = [
 ]
 
 [project.urls]
+Homepage = "https://github.com/jiacwng/eous"
 Repository = "https://github.com/jiacwng/eous"
 Issues = "https://github.com/jiacwng/eous/issues"
 
@@ -37,7 +64,7 @@ package-dir = {"" = "src"}
 packages = ["eous"]
 
 [tool.setuptools.package-data]
-eous = ["data/*.json"]
+eous = ["data/*.json", "py.typed"]
 
 [tool.ruff]
 line-length = 100

@@ -32,7 +32,7 @@ built from similar code produce digests that agree in many places."""
 
 EPILOGUE = """\
 digest format:
-  EO1:pe64:3136:5cfc520f897cc0cf...
+  EO1:pe64:3155:5cfc520f897cc0cf...
    |   |    |    |
    |   |    |    the sketch, 512 bits as 128 hex characters
    |   |    how many distinct instruction sequences were found
@@ -54,7 +54,7 @@ examples:
   eous hash samples/ > digests.txt
   eous hash --json samples/ > digests.json
   eous compare old.exe new.exe
-  eous compare EO1:pe64:56:eb7d... EO1:pe64:3136:5cfc...
+  eous compare EO1:pe64:2841:1f0a... EO1:pe64:3155:5cfc...
   eous match suspect.exe digests.txt
   eous match suspect.exe digests.txt --min 80
   eous cross digests.txt --min 40
@@ -65,8 +65,8 @@ reading a comparison:
                new.exe in old.exe   41.2% +/- 5
 
   The +/- figure is the margin of error, since 256 slots estimate the overlap.
-  It narrows as scores approach 100%. Two results whose ranges overlap stay
-  unranked against each other.
+  It narrows as scores approach 100%. Two results whose ranges overlap are
+  not separable.
 
   Containment runs both ways, and the gap between them says which side is the
   superset. It comes from the same estimate, so its margin is wider, and it
@@ -79,7 +79,7 @@ a refusal names its cause:
   eous: library.dll:  managed: il only, no native code
   eous: notes.txt:    unreadable: no recognised container
 
-files eous declines to digest are reported rather than guessed at. A digest is
+every file eous declines to digest is reported with its cause. A digest is
 withheld whenever the code inside stays unreadable."""
 
 
@@ -101,7 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE-OR-DIR")
     hash_command.add_argument("--json", action="store_true", help="machine-readable output")
-    hash_command.add_argument("--quiet", action="store_true", help="hold back refusal text")
+    hash_command.add_argument(
+        "--quiet", action="store_true", help="suppress the refusal lines on stderr"
+    )
 
     compare_command = commands.add_parser(
         "compare",
@@ -121,14 +123,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     match_command.add_argument("query", nargs="?", metavar="FILE-OR-DIGEST")
     match_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
-    match_command.add_argument("--top", type=int, default=10, help="how many to print")
+    match_command.add_argument(
+        "--top", type=int, default=10, help="how many results to print, default 10"
+    )
     match_command.add_argument(
         "--min",
         type=float,
         default=0.0,
         dest="minimum",
         metavar="PERCENT",
-        help="hold back anything scoring below this",
+        help="omit results scoring below this percentage",
     )
     match_command.add_argument("--json", action="store_true", help="machine-readable output")
 
@@ -146,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         dest="minimum",
         metavar="PERCENT",
-        help="hold back anything scoring below this",
+        help="omit results scoring below this percentage",
     )
     cross_command.add_argument("--json", action="store_true", help="machine-readable output")
 
@@ -198,6 +202,11 @@ def _quieten_stdout() -> None:
 
 def _run_hash(args: argparse.Namespace) -> int:
     paths = _expand(args.paths)
+    if not paths:
+        named = ", ".join(_readable(str(path)) for path in args.paths)
+        print(f"eous: {named}: no file to hash", file=sys.stderr)
+        return USAGE
+
     labelled = len(paths) > 1 or paths != args.paths
     records: list[dict[str, object]] = []
     refused = False
@@ -216,28 +225,53 @@ def _run_hash(args: argparse.Namespace) -> int:
     return REFUSED if refused else OK
 
 
-def _as_digest(text: str) -> str | None:
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _looks_like_a_path(text: str) -> bool:
+    return "/" in text or "\\" in text or Path(text).suffix != ""
+
+
+def _as_digest(text: str) -> tuple[str | None, int]:
     # A path that exists is a file; anything else is read as a digest string.
     path = Path(text)
-    if not path.is_file():
-        return text
+    if not _is_file(path):
+        if _looks_like_a_path(text):
+            print(f"eous: {_readable(text)}: no such file", file=sys.stderr)
+            return (None, USAGE)
+        return (text, OK)
 
     result = report.analyse(path)
     if result.digest is None:
         cause = result.refusal
-        reason = f"{cause.gate}: {_readable(cause.detail)}" if cause else "no digest"
+        reason = f"{cause.reason}: {_readable(cause.detail)}" if cause else "no digest"
         print(f"eous: {_readable(str(path))}: {reason}", file=sys.stderr)
-        return None
-    return result.digest
+        return (None, REFUSED)
+    return (result.digest, OK)
 
 
 def _run_compare(args: argparse.Namespace) -> int:
     resolved: list[str] = []
     labels: list[str] = []
     for text, side in ((args.left, "left"), (args.right, "right")):
-        found = _as_digest(text)
+        found, code = _as_digest(text)
         if found is None:
-            return REFUSED
+            return code
         resolved.append(found)
         labels.append(side if found is text else text)
 
@@ -247,8 +281,19 @@ def _run_compare(args: argparse.Namespace) -> int:
         print(f"eous: {exc}", file=sys.stderr)
         return USAGE
 
+    given = zip((args.left, args.right), resolved, strict=True)
+    named: list[str | None] = [None if found is text else text for text, found in given]
     if args.json:
-        print(json.dumps({"meta": _meta(), "comparison": _as_scores(scores, labels)}, indent=1))
+        print(
+            json.dumps(
+                {
+                    "meta": _meta(),
+                    "target": digest.parse(resolved[0]).target,
+                    "comparison": _as_scores(scores, named),
+                },
+                indent=1,
+            )
+        )
     else:
         _print_scores(scores, labels)
     return OK
@@ -292,15 +337,15 @@ def _read_known(path: Path, target: str) -> tuple[list[str], list[digest.Sketch]
 
 def _run_match(args: argparse.Namespace) -> int:
     if args.top < 0:
-        print("eous: --top counts from zero", file=sys.stderr)
+        print("eous: --top is a count of 0 or more", file=sys.stderr)
         return USAGE
     if not 0.0 <= args.minimum <= 100.0:
         print("eous: --min is a percentage from 0 to 100", file=sys.stderr)
         return USAGE
 
-    text = _as_digest(args.query)
+    text, code = _as_digest(args.query)
     if text is None:
-        return REFUSED
+        return code
 
     try:
         query = digest.parse(text)
@@ -312,11 +357,13 @@ def _run_match(args: argparse.Namespace) -> int:
         labels, sketches, other_target, unreadable = _read_known(args.known, query.target)
     except OSError as exc:
         print(f"eous: {_readable(str(args.known))}: {exc.strerror}", file=sys.stderr)
-        return REFUSED
+        return USAGE
 
     if not sketches:
+        if unreadable:
+            print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
         print(
-            f"eous: {_readable(str(args.known))}: holds no {query.target} digest",
+            f"eous: {_readable(str(args.known))}: contains no {query.target} digest",
             file=sys.stderr,
         )
         return USAGE
@@ -335,8 +382,8 @@ def _run_match(args: argparse.Namespace) -> int:
                     "meta": _meta(),
                     "query": args.query,
                     "target": query.target,
-                    "other_target": other_target,
-                    "unreadable": unreadable,
+                    "skipped_other_target": other_target,
+                    "unparsed": unreadable,
                     "below_minimum": below_minimum,
                     "matches": [
                         {
@@ -355,11 +402,17 @@ def _run_match(args: argparse.Namespace) -> int:
             print(f"{float(score):5.1f}% +/- {float(margin):3.1f}  {_readable(label)}")
 
     if other_target:
-        print(f"eous: {other_target} built for another target", file=sys.stderr)
+        print(
+            f"eous: {_plural(other_target, 'digest')} skipped, built for another target",
+            file=sys.stderr,
+        )
     if unreadable:
-        print(f"eous: {unreadable} lines held no digest", file=sys.stderr)
+        print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
     if below_minimum:
-        print(f"eous: {below_minimum} scored below {args.minimum:g}%", file=sys.stderr)
+        print(
+            f"eous: {_plural(below_minimum, 'digest')} scored below {args.minimum:g}%",
+            file=sys.stderr,
+        )
     return OK
 
 
@@ -379,24 +432,39 @@ def _run_cross(args: argparse.Namespace) -> int:
         labels, sketches, unreadable = _read_digests(args.known)
     except OSError as exc:
         print(f"eous: {_readable(str(args.known))}: {exc.strerror}", file=sys.stderr)
-        return REFUSED
+        return USAGE
 
     grouped = _by_target(sketches)
     if not grouped:
+        if unreadable:
+            print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
         print(
-            f"eous: {_readable(str(args.known))}: holds no two digests of one target",
+            f"eous: {_readable(str(args.known))}: contains fewer than two digests "
+            "of any one target",
             file=sys.stderr,
         )
         return USAGE
 
     shown = [_readable(label) for label in labels]
     targets = sorted(grouped)
-    pairs: list[dict[str, object]] = []
+    alone = len(sketches) - sum(len(grouped[target]) for target in targets)
     below_minimum = 0
     total = 0
 
-    # One digest against the rows after it, so each pair is scored once and the run holds
-    # the digests alone.
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "meta": _meta(),
+                    "digests": len(sketches),
+                    "targets": targets,
+                    "unparsed": unreadable,
+                    "skipped_alone_in_target": alone,
+                }
+            )
+        )
+
+    # One digest against the rows after it, so each pair is scored once.
     for target in targets:
         members = grouped[target]
         rows = digest.unpack_all([sketches[index] for index in members])
@@ -411,14 +479,16 @@ def _run_cross(args: argparse.Namespace) -> int:
                     continue
                 right = members[offset + 1 + step]
                 if args.json:
-                    pairs.append(
-                        {
-                            "left": labels[left],
-                            "right": labels[right],
-                            "target": target,
-                            "similarity": round(float(score), 4),
-                            "uncertainty": round(float(margin), 4),
-                        }
+                    print(
+                        json.dumps(
+                            {
+                                "left": labels[left],
+                                "right": labels[right],
+                                "target": target,
+                                "similarity": round(float(score), 4),
+                                "uncertainty": round(float(margin), 4),
+                            }
+                        )
                     )
                 else:
                     print(
@@ -427,26 +497,21 @@ def _run_cross(args: argparse.Namespace) -> int:
                     )
 
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "meta": _meta(),
-                    "digests": len(sketches),
-                    "targets": targets,
-                    "pairs_scored": total,
-                    "unreadable": unreadable,
-                    "below_minimum": below_minimum,
-                    "pairs": pairs,
-                },
-                indent=1,
-            )
-        )
+        print(json.dumps({"pairs_scored": total, "below_minimum": below_minimum}))
 
-    print(f"eous: {total} pairs scored across {', '.join(targets)}", file=sys.stderr)
+    print(f"eous: {_plural(total, 'pair')} scored across {', '.join(targets)}", file=sys.stderr)
+    if alone:
+        print(
+            f"eous: {_plural(alone, 'digest')} skipped, alone in its target",
+            file=sys.stderr,
+        )
     if unreadable:
-        print(f"eous: {unreadable} lines held no digest", file=sys.stderr)
+        print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
     if below_minimum:
-        print(f"eous: {below_minimum} scored below {args.minimum:g}%", file=sys.stderr)
+        print(
+            f"eous: {_plural(below_minimum, 'pair')} scored below {args.minimum:g}%",
+            file=sys.stderr,
+        )
     return OK
 
 
@@ -463,7 +528,7 @@ def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
         print("containment: n/a (the two differ in size by more than 4x)")
         return
 
-    left, right = labels
+    left, right = (_readable(label) for label in labels)
     width = max(len(left), len(right))
     print(
         f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%"
@@ -475,7 +540,7 @@ def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
     )
 
 
-def _as_scores(scores: digest.Scores, labels: list[str]) -> dict[str, object]:
+def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, object]:
     def rounded(value: float | None) -> float | None:
         return None if value is None else round(value, 4)
 
@@ -507,7 +572,7 @@ def _expand(paths: list[Path]) -> list[Path]:
     found: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
-        walked = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
+        walked = sorted(p for p in path.rglob("*") if _is_file(p)) if _is_dir(path) else [path]
         for candidate in walked:
             real = candidate.resolve()
             if real not in seen:
@@ -535,15 +600,15 @@ def _print_line(result: report.Analysis, labelled: bool, quiet: bool) -> None:
         line = f"{path}  {result.digest}" if labelled else result.digest
         print(line, flush=True)
     elif result.refusal is not None and not quiet:
-        gate, detail = result.refusal.gate, _readable(result.refusal.detail)
-        print(f"eous: {_readable(str(result.path))}: {gate}: {detail}", file=sys.stderr)
+        reason, detail = result.refusal.reason, _readable(result.refusal.detail)
+        print(f"eous: {_readable(str(result.path))}: {reason}: {detail}", file=sys.stderr)
 
 
 def _as_record(result: report.Analysis) -> dict[str, object]:
     return {
         "path": str(result.path),
         "digest": result.digest,
-        "gate": result.refusal.gate if result.refusal else None,
+        "reason": result.refusal.reason if result.refusal else None,
         "detail": result.refusal.detail if result.refusal else None,
     }
 

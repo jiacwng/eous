@@ -107,13 +107,32 @@ def test_one_file_in_a_directory_is_still_labelled(
     assert output.readouterr().out.startswith(str(tmp_path / "only.exe"))
 
 
-def test_an_empty_directory_digests_nothing(
+def test_an_empty_directory_says_it_holds_nothing(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["hash", str(tmp_path)]) == cli.OK
+    assert cli.main(["hash", str(tmp_path)]) == cli.USAGE
     captured = output.readouterr()
     assert captured.out == ""
-    assert captured.err == ""
+    assert "no file to hash" in captured.err
+    assert str(tmp_path) in captured.err
+
+
+def test_every_named_directory_appears_when_none_holds_a_file(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    second = tmp_path / "second"
+    second.mkdir()
+    assert cli.main(["hash", str(tmp_path), str(second)]) == cli.USAGE
+    assert str(second) in output.readouterr().err
+
+
+def test_an_over_long_path_is_refused_rather_than_crashing(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["hash", str(tmp_path / ("a" * 400))]) == cli.REFUSED
+    captured = output.readouterr()
+    assert "internal error" not in captured.err
+    assert "unreadable" in captured.err
 
 
 def test_a_directory_and_a_named_file_run_together(
@@ -174,7 +193,7 @@ def test_a_refused_file_exits_one(tmp_path: Path, output: pytest.CaptureFixture[
     assert cli.main(["hash", str(target)]) == cli.REFUSED
 
 
-def test_a_refusal_names_its_gate_on_stderr(
+def test_a_refusal_names_its_reason_on_stderr(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
     target = tmp_path / "thing.macho"
@@ -283,7 +302,7 @@ def test_json_carries_the_refusal(tmp_path: Path, output: pytest.CaptureFixture[
     cli.main(["hash", "--json", str(target)])
     payload = json.loads(output.readouterr().out)
     assert payload["results"][0]["digest"] is None
-    assert payload["results"][0]["gate"] == "unreadable"
+    assert payload["results"][0]["reason"] == "unreadable"
 
 
 def test_json_stays_on_stdout_alone(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
@@ -414,7 +433,7 @@ def test_a_file_compares_against_a_digest(output: pytest.CaptureFixture[str]) ->
 # read as a malformed digest.
 def test_a_mistyped_path_reports_as_a_digest_problem(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["compare", "no/such/file.exe", str(CLEAN)]) == cli.USAGE
-    assert output.readouterr().err
+    assert "no such file" in output.readouterr().err
 
 
 def test_a_refused_file_stops_the_comparison(
@@ -627,7 +646,7 @@ def test_match_skips_entries_built_for_another_target(
     assert cli.main(["match", str(CLEAN), str(known)]) == cli.OK
     captured = output.readouterr()
     assert len([line for line in captured.out.splitlines() if line]) == 1
-    assert "2 built for another target" in captured.err
+    assert "2 digests skipped, built for another target" in captured.err
 
 
 def test_match_is_a_usage_error_when_nothing_shares_the_target(
@@ -637,7 +656,7 @@ def test_match_is_a_usage_error_when_nothing_shares_the_target(
     assert cli.main(["match", str(CLEAN), str(known)]) == cli.USAGE
     captured = output.readouterr()
     assert captured.out == ""
-    assert "holds no pe64 digest" in captured.err
+    assert "contains no pe64 digest" in captured.err
 
 
 def test_match_limits_the_list(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
@@ -654,7 +673,7 @@ def test_match_skips_a_line_that_is_not_a_digest(
     assert cli.main(["match", str(CLEAN), str(known)]) == cli.OK
     captured = output.readouterr()
     assert len([line for line in captured.out.splitlines() if line]) == 1
-    assert "1 lines held no digest" in captured.err
+    assert "1 line did not parse" in captured.err
 
 
 def test_match_takes_a_digest_string_as_the_query(
@@ -676,11 +695,11 @@ def test_match_refuses_a_query_it_cannot_digest(
     assert "unreadable" in output.readouterr().err
 
 
-def test_match_refuses_a_digests_file_it_cannot_read(
+def test_match_is_a_usage_error_when_the_digests_file_is_absent(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
     absent = tmp_path / "absent.txt"
-    assert cli.main(["match", str(CLEAN), str(absent)]) == cli.REFUSED
+    assert cli.main(["match", str(CLEAN), str(absent)]) == cli.USAGE
     printed = output.readouterr().err
     assert str(absent) in printed
     assert "No such file" in printed
@@ -693,7 +712,7 @@ def test_match_json_carries_the_target_and_the_ranking(
     assert cli.main(["match", str(CLEAN), str(known), "--json"]) == cli.OK
     payload = json.loads(output.readouterr().out)
     assert payload["target"] == "pe64"
-    assert payload["other_target"] == 1
+    assert payload["skipped_other_target"] == 1
     assert payload["matches"][0]["uncertainty"] == pytest.approx(0.0)
     assert payload["matches"][0]["similarity"] == pytest.approx(100.0)
 
@@ -716,6 +735,41 @@ def test_a_negative_top_is_a_usage_error(
     assert "--top" in output.readouterr().err
 
 
+# A digest is longer than most filesystems allow a name to be, so probing it as a path
+# raises ENAMETOOLONG where a shorter name returns false.
+# The example in the help text drifted once already, showing a cardinality the tool had
+# stopped producing and an elf64 sketch labelled pe64.
+def test_the_help_example_is_the_digest_the_fixture_produces() -> None:
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    shown = next(
+        line.strip() for line in cli.EPILOGUE.splitlines() if line.strip().startswith("EO1:")
+    )
+    assert shown.rstrip(".") == text[: len(shown.rstrip("."))]
+
+
+def test_a_digest_too_long_to_be_a_filename_is_read_as_a_digest(
+    output: pytest.CaptureFixture[str],
+) -> None:
+    text = report.analyse(CLEAN).digest
+    assert text is not None
+    body = text.rsplit(":", 1)[1]
+    assert cli.main(["compare", f"EO1:pe64:{'9' * 400}:{body}", text]) == cli.USAGE
+    assert "internal error" not in output.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses an escape in a file name")
+def test_compare_escapes_a_hostile_filename(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "evil\x1b[31mRED.exe"
+    target.write_bytes(CLEAN.read_bytes())
+    assert cli.main(["compare", str(target), str(target)]) == cli.OK
+    printed = output.readouterr().out
+    assert "\x1b" not in printed
+    assert r"\x1b" in printed
+
+
 def test_match_holds_back_anything_below_the_minimum(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
@@ -732,7 +786,7 @@ def test_match_holds_back_anything_below_the_minimum(
     lines = [line for line in captured.out.splitlines() if line]
     assert len(lines) == 1
     assert lines[0].startswith("100.0%")
-    assert "1 scored below 99%" in captured.err
+    assert "1 digest scored below 99%" in captured.err
 
 
 def test_a_minimum_above_one_hundred_is_a_usage_error(
@@ -755,7 +809,7 @@ def test_a_minimum_nothing_clears_prints_no_ranking(
     assert cli.main(["match", str(ELF64), str(known), "--min", "99"]) == cli.OK
     captured = output.readouterr()
     assert captured.out.strip() == ""
-    assert "1 scored below 99%" in captured.err
+    assert "1 digest scored below 99%" in captured.err
 
 
 def test_the_minimum_keeps_an_exact_score(
@@ -847,7 +901,7 @@ def test_cross_holds_back_anything_below_the_minimum(
     assert cli.main(["cross", str(known), "--min", "99"]) == cli.OK
     captured = output.readouterr()
     assert len([line for line in captured.out.splitlines() if line]) == 1
-    assert "2 scored below 99%" in captured.err
+    assert "2 pairs scored below 99%" in captured.err
 
 
 def test_cross_is_a_usage_error_when_no_target_holds_two(
@@ -857,7 +911,7 @@ def test_cross_is_a_usage_error_when_no_target_holds_two(
     assert cli.main(["cross", str(known)]) == cli.USAGE
     captured = output.readouterr()
     assert captured.out == ""
-    assert "holds no two digests of one target" in captured.err
+    assert "contains fewer than two digests" in captured.err
 
 
 def test_cross_counts_a_line_that_is_not_a_digest(
@@ -866,14 +920,14 @@ def test_cross_counts_a_line_that_is_not_a_digest(
     known = known_file(tmp_path, CLEAN, CLEAN)
     known.write_text(known.read_text(encoding="utf-8") + "notes.txt  not-a-digest\n", "utf-8")
     assert cli.main(["cross", str(known)]) == cli.OK
-    assert "1 lines held no digest" in output.readouterr().err
+    assert "1 line did not parse" in output.readouterr().err
 
 
-def test_cross_refuses_a_digests_file_it_cannot_read(
+def test_cross_is_a_usage_error_when_the_digests_file_is_absent(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
     absent = tmp_path / "absent.txt"
-    assert cli.main(["cross", str(absent)]) == cli.REFUSED
+    assert cli.main(["cross", str(absent)]) == cli.USAGE
     printed = output.readouterr().err
     assert str(absent) in printed
     assert "No such file" in printed
@@ -887,17 +941,22 @@ def test_cross_rejects_a_minimum_outside_the_range(
     assert "--min" in output.readouterr().err
 
 
-def test_cross_json_carries_every_pair_and_its_targets(
+# A collection of N digests holds N(N-1)/2 pairs, so this output is one object per line and
+# is never gathered in memory.
+def test_cross_json_writes_one_object_per_line(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
     known = known_file(tmp_path, CLEAN, CLEAN, ELF64, ELF64)
     assert cli.main(["cross", str(known), "--json"]) == cli.OK
-    payload = json.loads(output.readouterr().out)
-    assert payload["digests"] == 4
-    assert payload["targets"] == ["elf64", "pe64"]
-    assert payload["pairs_scored"] == 2
-    assert {row["target"] for row in payload["pairs"]} == {"elf64", "pe64"}
-    assert payload["pairs"][0]["similarity"] == pytest.approx(100.0)
+    lines = [json.loads(line) for line in output.readouterr().out.splitlines() if line]
+
+    header, *pairs, summary = lines
+    assert header["digests"] == 4
+    assert header["targets"] == ["elf64", "pe64"]
+    assert header["unparsed"] == 0
+    assert summary == {"pairs_scored": 2, "below_minimum": 0}
+    assert {row["target"] for row in pairs} == {"elf64", "pe64"}
+    assert pairs[0]["similarity"] == pytest.approx(100.0)
 
 
 def test_cross_escapes_a_hostile_label(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
@@ -926,10 +985,8 @@ def test_cross_and_match_agree_on_every_pair(
     )
 
     assert cli.main(["cross", str(known), "--json"]) == cli.OK
-    from_cross = {
-        (row["left"], row["right"]): row["similarity"]
-        for row in json.loads(output.readouterr().out)["pairs"]
-    }
+    rows = [json.loads(line) for line in output.readouterr().out.splitlines() if line]
+    from_cross = {(r["left"], r["right"]): r["similarity"] for r in rows if "left" in r}
     assert len(from_cross) == 6
 
     for name, value in zip(names, weakened, strict=True):

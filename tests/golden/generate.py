@@ -12,14 +12,14 @@ import hashlib
 import json
 from pathlib import Path
 
-from eous import digest, disasm, loader, toolchain
+from eous import digest, loader, report, toolchain
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures" / "bin"
 VECTORS = HERE / "vectors.json"
 
 # A hand-written case, so a rebuilt fixture and an altered algorithm fail differently.
-SYNTHETIC_CHUNKS = (
+SYNTHETIC_RUNS = (
     ("push", "mov", "sub", "mov", "xor", "call", "add", "pop", "ret"),
     ("mov", "test", "je", "lea", "mov", "call", "mov", "ret"),
     ("xor", "inc", "cmp", "jne", "mov", "shl", "or", "and", "not", "ret"),
@@ -32,15 +32,15 @@ def build() -> dict[str, object]:
     for path in sorted(FIXTURES.iterdir()):
         raw = path.read_bytes()
         binary = loader.load(path)
-        sweep = disasm.sweep(binary)
+        found = report.disassemble(binary)
         files.append(
             {
                 "name": path.name,
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 "target": binary.target,
-                "decoded": sweep.total_decoded,
-                "chunks": len(sweep.chunks),
-                "digest": digest.digest(sweep.chunks, binary.target),
+                "decoded": found.total_decoded,
+                "runs": len(found.runs),
+                "digest": digest.digest(found.runs, binary.target),
             }
         )
 
@@ -53,8 +53,8 @@ def build() -> dict[str, object]:
         "files": files,
         "synthetic": {
             "target": SYNTHETIC_TARGET,
-            "chunks": [list(chunk) for chunk in SYNTHETIC_CHUNKS],
-            "digest": digest.digest(SYNTHETIC_CHUNKS, SYNTHETIC_TARGET),
+            "runs": [list(run) for run in SYNTHETIC_RUNS],
+            "digest": digest.digest(SYNTHETIC_RUNS, SYNTHETIC_TARGET),
         },
     }
 
