@@ -758,6 +758,7 @@ def test_a_digest_too_long_to_be_a_filename_is_read_as_a_digest(
     assert "internal error" not in output.readouterr().err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses an escape in a file name")
 def test_compare_escapes_a_hostile_filename(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
