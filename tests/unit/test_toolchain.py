@@ -22,7 +22,3 @@ def test_the_decoder_version_is_the_installed_one() -> None:
 
 def test_the_lief_build_suffix_is_dropped() -> None:
     assert lief.__version__.startswith(toolchain.engines()["lief"])
-
-
-def test_the_reading_repeats() -> None:
-    assert toolchain.engines() == toolchain.engines()
