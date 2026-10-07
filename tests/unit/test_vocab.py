@@ -1,89 +1,57 @@
+import hashlib
+from importlib import resources
+
 import pytest
 
-from eous import vocab
-
-ARCHES = ["x86", "x86-64"]
+from eous import disasm, vocab
 
 
-@pytest.fixture(params=ARCHES)
-def v(request: pytest.FixtureRequest) -> vocab.Vocab:
-    return vocab.load(request.param)
+def test_load_is_cached() -> None:
+    assert vocab.load() is vocab.load()
 
 
-def test_load_caches_per_arch() -> None:
-    assert vocab.load("x86") is vocab.load("x86")
+def test_every_entry_is_a_mnemonic_the_decoder_emits() -> None:
+    assert set(vocab.load()) <= set(disasm.MNEMONICS.values())
 
 
-def test_every_root_a_member_uses_has_a_category(v: vocab.Vocab) -> None:
-    uncategorised = set(v.members.values()) - set(v.root_to_category)
-    assert uncategorised == set()
+# Every entry shapes digests, so the table is pinned the way the golden vectors are.
+def test_the_table_is_the_one_the_vectors_were_taken_from() -> None:
+    raw = resources.files("eous").joinpath("data").joinpath(vocab.DATA_FILE).read_bytes()
+    assert len(vocab.load()) == 1394
+    assert len(set(vocab.load().values())) == 84
+    assert hashlib.sha256(raw).hexdigest() == (
+        "52bfae704f5f7d5c7eaefcd2b06444f14e9d4d5e0103132a15fa7d27e0b74546"
+    )
 
 
-def test_every_declared_root_is_reachable_from_some_mnemonic(v: vocab.Vocab) -> None:
-    unreachable = set(v.root_to_category) - set(v.members.values())
-    assert unreachable == set()
+def test_an_unknown_mnemonic_has_no_root() -> None:
+    assert vocab.load().get("definitely_not_an_instruction") is None
 
 
-def test_categories_are_ten(v: vocab.Vocab) -> None:
-    assert len(set(v.root_to_category.values())) == 10
-
-
-def test_unknown_mnemonic_returns_none(v: vocab.Vocab) -> None:
-    assert v.root_of("definitely_not_an_instruction") is None
-
-
-# The bug this vocabulary exists to avoid: a prefix scan files popcnt under pop and
-# xorps under xor. Exact membership keeps each on its own root.
+# A prefix scan would file popcnt under pop and xorps under xor. Exact membership keeps each
+# on its own root.
 @pytest.mark.parametrize(
     ("mnemonic", "collides_with"),
     [
         ("popcnt", "pop"),
         ("xorps", "xor"),
-        ("notrack", "not"),
         ("addps", "add"),
         ("subps", "sub"),
         ("andn", "and"),
         ("incsspd", "inc"),
     ],
 )
-def test_lookalike_mnemonics_keep_their_own_root(
-    v: vocab.Vocab, mnemonic: str, collides_with: str
-) -> None:
-    root = v.root_of(mnemonic)
-    assert root is not None
-    assert root != v.root_of(collides_with)
+def test_lookalike_mnemonics_keep_their_own_root(mnemonic: str, collides_with: str) -> None:
+    roots = vocab.load()
+    assert roots[mnemonic] != roots[collides_with]
 
 
-# movsd is a scalar move and movsb is a string move, and only exact membership tells them
-# apart. The decoder reports a `rep` prefix separately, so neither name ever carries one.
-def test_the_string_move_and_the_scalar_move_differ(v: vocab.Vocab) -> None:
-    assert v.root_of("movsd") != v.root_of("movsb")
+def test_the_string_move_and_the_scalar_move_differ() -> None:
+    roots = vocab.load()
+    assert roots["movsd"] != roots["movsb"]
 
 
-@pytest.mark.parametrize(
-    ("mnemonic", "category"),
-    [
-        ("mov", "transfer"),
-        ("add", "arithmetic"),
-        ("xor", "logic"),
-        ("shl", "shift"),
-        ("cmp", "comparison"),
-        ("call", "branch"),
-        ("movsb", "string"),
-        ("fadd", "float"),
-        ("addps", "vector"),
-        ("cpuid", "system"),
-    ],
-)
-def test_representative_mnemonics_land_in_expected_category(
-    v: vocab.Vocab, mnemonic: str, category: str
-) -> None:
-    root = v.root_of(mnemonic)
-    assert root is not None
-    assert v.root_to_category[root] == category
-
-
-def test_common_instructions_are_covered(v: vocab.Vocab) -> None:
+def test_common_instructions_are_covered() -> None:
     everyday = [
         "mov",
         "push",
@@ -106,4 +74,4 @@ def test_common_instructions_are_covered(v: vocab.Vocab) -> None:
         "and",
         "or",
     ]
-    assert [m for m in everyday if v.root_of(m) is None] == []
+    assert [m for m in everyday if m not in vocab.load()] == []
