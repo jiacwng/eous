@@ -155,16 +155,15 @@ class Scores:
     right_in_left_uncertainty: float | None
 
 
-def instruction_set(target: str) -> str:
-    # Both formats run the same instructions, so the vocabulary is keyed by width alone.
+def _check_target(target: str) -> None:
     if target not in TARGETS:
         raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
-    return "x86" if target.endswith("32") else "x86-64"
 
 
 def normalise(runs: tuple[tuple[str, ...], ...], target: str) -> list[list[str]]:
-    vocab = load_vocab(instruction_set(target))
-    return [[vocab.root_of(mnemonic) or OOV for mnemonic in run] for run in runs]
+    _check_target(target)
+    roots = load_vocab()
+    return [[roots.get(mnemonic, OOV) for mnemonic in run] for run in runs]
 
 
 def shingles(runs: list[list[str]]) -> set[tuple[str, ...]]:
@@ -209,8 +208,7 @@ def parse(text: str) -> Sketch:
     version, target, cardinality, body = fields
     if version != VERSION:
         raise DigestError(f"expected version {VERSION}, found {version!r}")
-    if target not in TARGETS:
-        raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
+    _check_target(target)
     if not (cardinality.isascii() and cardinality.isdigit()):
         raise DigestError(f"cardinality {cardinality!r} is a non-negative integer")
     if int(cardinality) > MAX_CARDINALITY:
