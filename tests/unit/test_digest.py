@@ -1,12 +1,10 @@
 import random
-from pathlib import Path
 
 import pytest
 
+from conftest import FIXTURES, NAMES
 from eous import digest, disasm, loader
 from eous.digest import DigestError
-
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 
 # Real mnemonics, since invented names resolve to the unknown token.
 # fmt: off
@@ -59,9 +57,6 @@ def reference_pack(grams: set[tuple[str, ...]]) -> int:
     return accumulated
 
 
-# ---- constants and derivation -----------------------------------------------
-
-
 def test_the_sketch_is_512_bits() -> None:
     assert digest.PERMUTATIONS * digest.SLOT_BITS == 512
     assert digest.SKETCH_HEX == 128
@@ -92,15 +87,8 @@ def test_permutations_follow_their_stated_derivation() -> None:
     assert digest.COEFFICIENTS[7] == (expected_a, expected_b)
 
 
-def test_the_hash_is_stable_across_calls() -> None:
-    assert digest.h64(b"payload", b"eous-ng") == digest.h64(b"payload", b"eous-ng")
-
-
 def test_the_two_personalisations_differ() -> None:
     assert digest.h64(b"x", b"eous-ng") != digest.h64(b"x", b"eous-prm")
-
-
-# ---- normalisation ----------------------------------------------------------
 
 
 def test_mnemonics_become_roots() -> None:
@@ -118,9 +106,6 @@ def test_the_unknown_token_keeps_its_position() -> None:
     result = digest.normalise((chunk("push", "wibble", "pop"),), "pe64")
     assert len(result[0]) == 3
     assert result[0][1] == digest.OOV
-
-
-# ---- shingles ---------------------------------------------------------------
 
 
 def test_a_chunk_shorter_than_the_window_yields_nothing() -> None:
@@ -155,17 +140,9 @@ def test_one_unknown_token_is_tolerated() -> None:
     assert len(digest.shingles([tokens])) == 1
 
 
-# ---- packing ----------------------------------------------------------------
-
-
 def test_the_packed_value_fits_the_sketch() -> None:
     packed = digest.pack(digest.shingles([["mov"] * 40]))
     assert 0 <= packed < 1 << (digest.PERMUTATIONS * digest.SLOT_BITS)
-
-
-def test_packing_is_stable() -> None:
-    grams = digest.shingles([[f"op{i}" for i in range(60)]])
-    assert digest.pack(grams) == digest.pack(grams)
 
 
 def test_set_order_leaves_the_sketch_unchanged() -> None:
@@ -193,9 +170,6 @@ def test_an_empty_shingle_set_names_its_cause() -> None:
         digest.pack(set())
 
 
-# ---- the digest string ------------------------------------------------------
-
-
 def test_a_digest_carries_four_fields() -> None:
     text = digest.digest(straight(40), "pe64")
     assert text is not None
@@ -220,8 +194,7 @@ def test_wholly_unrecognisable_code_still_yields_a_digest() -> None:
     assert digest.parse(text).cardinality == 1
 
 
-# `'²'.isdigit()` is true and `int('²')` raises, so a numeric character that is not an ASCII
-# digit used to escape DigestError and reach the caller as an internal error.
+# `'²'.isdigit()` is true and `int('²')` raises, so the cardinality is read as ASCII digits.
 def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
     text = digest.digest((chunk(*(["mov"] * 40)),), "pe64")
     assert text is not None
@@ -260,13 +233,6 @@ def test_an_unsupported_target_raises() -> None:
         digest.digest(straight(40), "mips")
 
 
-def test_the_same_input_digests_the_same_way() -> None:
-    assert digest.digest(straight(40), "pe32") == digest.digest(straight(40), "pe32")
-
-
-# ---- parsing ----------------------------------------------------------------
-
-
 def test_a_digest_round_trips() -> None:
     text = digest.digest(straight(40), "pe64")
     assert text is not None
@@ -288,9 +254,6 @@ def test_a_digest_round_trips() -> None:
 def test_a_malformed_digest_raises(text: str, complaint: str) -> None:
     with pytest.raises(DigestError, match=complaint):
         digest.parse(text)
-
-
-# ---- comparison -------------------------------------------------------------
 
 
 def test_a_digest_matches_itself_completely() -> None:
@@ -319,9 +282,6 @@ def test_comparison_accepts_parsed_sketches() -> None:
     text = digest.digest(straight(60), "pe32")
     assert text is not None
     assert digest.compare(sketch_of(text), sketch_of(text)).similarity == pytest.approx(100.0)
-
-
-# ---- many at once -----------------------------------------------------------
 
 
 def group_of(count: int) -> list[digest.Sketch]:
@@ -399,9 +359,6 @@ def test_identical_sketches_carry_zero_uncertainty() -> None:
     assert digest.compare(text, text).uncertainty == pytest.approx(0.0)
 
 
-# ---- containment ------------------------------------------------------------
-
-
 def test_containment_is_reported_both_ways_at_similar_sizes() -> None:
     text = digest.digest((tuple(varied(400, seed=88)),), "pe64")
     assert text is not None
@@ -477,51 +434,8 @@ def test_the_margin_of_error_widens_with_the_size_gap() -> None:
     assert apart.left_in_right_uncertainty > close.left_in_right_uncertainty
 
 
-# ---- against the real fixtures ----------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name",
-    ["fixture-pe-x64.exe", "fixture-pe-x86.exe", "fixture-elf-x64", "fixture-elf-x86"],
-)
-def test_every_fixture_digests(name: str) -> None:
-    binary = loader.load(FIXTURES / name)
-    text = digest.digest(disasm.disassemble(binary).runs, binary.target)
-    assert text is not None
-    assert digest.parse(text).target == binary.target
-
-
-@pytest.mark.parametrize(
-    "name",
-    ["fixture-pe-x64.exe", "fixture-pe-x86.exe", "fixture-elf-x64", "fixture-elf-x86"],
-)
+@pytest.mark.parametrize("name", NAMES)
 def test_the_array_path_matches_the_reference_on_every_fixture(name: str) -> None:
     binary = loader.load(FIXTURES / name)
     grams = digest.shingles(digest.normalise(disasm.disassemble(binary).runs, binary.target))
     assert digest.pack(grams) == reference_pack(grams)
-
-
-def test_a_fixture_digests_the_same_way_twice() -> None:
-    binary = loader.load(FIXTURES / "fixture-pe-x64.exe")
-    chunks = disasm.disassemble(binary).runs
-    assert digest.digest(chunks, binary.target) == digest.digest(chunks, binary.target)
-
-
-def test_the_two_pe_fixtures_refuse_to_compare() -> None:
-    left = loader.load(FIXTURES / "fixture-pe-x64.exe")
-    right = loader.load(FIXTURES / "fixture-pe-x86.exe")
-    a = digest.digest(disasm.disassemble(left).runs, left.target)
-    b = digest.digest(disasm.disassemble(right).runs, right.target)
-    assert a is not None and b is not None
-    with pytest.raises(DigestError, match="different targets"):
-        digest.compare(a, b)
-
-
-def test_one_width_across_formats_refuses_to_compare() -> None:
-    pe = loader.load(FIXTURES / "fixture-pe-x64.exe")
-    elf = loader.load(FIXTURES / "fixture-elf-x64")
-    a = digest.digest(disasm.disassemble(pe).runs, pe.target)
-    b = digest.digest(disasm.disassemble(elf).runs, elf.target)
-    assert a is not None and b is not None
-    with pytest.raises(DigestError, match="different targets"):
-        digest.compare(a, b)

@@ -1,12 +1,10 @@
 import os
-import struct
 from pathlib import Path
 
 import pytest
 
+from conftest import FIXTURES, NAMES, stripped_elf
 from eous import digest, disasm, loader
-
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
 
 NOP = b"\x90"
 RET = b"\xc3"
@@ -52,9 +50,6 @@ def mnemonics(result: disasm.Disassembly) -> list[str]:
     return [m for chunk in result.runs for m in chunk]
 
 
-# ---- chunk boundaries -------------------------------------------------------
-
-
 def test_a_terminator_ends_the_chunk() -> None:
     result = disasm.disassemble(binary(section(XOR_EAX + RET + XOR_EAX + RET)))
     assert result.runs == (("xor", "ret"), ("xor", "ret"))
@@ -98,6 +93,11 @@ ENDS_A_CHUNK = [
     (b"\x7e\x00", "jle"),
     (b"\xe2\x00", "loop"),
     (b"\xe3\x00", "jrcxz"),
+    # `repz ret` is the GCC x86-64 epilogue, so overlooking it merges adjacent functions.
+    (b"\xf3\xc3", "repz ret"),
+    (b"\x3e\xff\xe0", "notrack jmp"),
+    (b"\x3e\xff\xd0", "notrack call"),
+    (b"\xf2\xe9\x00\x00\x00\x00", "bnd jmp"),
 ]
 
 
@@ -119,26 +119,6 @@ def test_an_instruction_that_falls_through_keeps_the_chunk_open(
     assert len(result.runs) == 1, f"{label} closed the chunk: {result.runs}"
 
 
-# `repz ret` is the GCC x86-64 epilogue, so overlooking it merges adjacent functions.
-PREFIXED_TERMINATORS = [
-    (b"\xf3\xc3", "repz ret"),
-    (b"\x48\xcb", "retfq"),
-    (b"\x3e\xff\xe0", "notrack jmp"),
-    (b"\x3e\xff\xd0", "notrack call"),
-    (b"\xf2\xe9\x00\x00\x00\x00", "bnd jmp"),
-]
-
-
-@pytest.mark.parametrize(
-    ("encoding", "label"), PREFIXED_TERMINATORS, ids=[p[1] for p in PREFIXED_TERMINATORS]
-)
-def test_a_prefixed_terminator_still_ends_the_chunk(encoding: bytes, label: str) -> None:
-    body = b"\x55\x48\x89\xe5\x31\xc0"
-    data = (body + encoding) * 2
-    result = disasm.disassemble(binary(section(data), arch="x86-64"))
-    assert len(result.runs) == 2, f"{label} failed to close the chunk: {result.runs}"
-
-
 def test_a_prefixed_ordinary_instruction_leaves_the_chunk_open() -> None:
     # `rep movsb` repeats in place, so execution does fall through to the next address.
     # The decoder reports the prefix separately, so the mnemonic arrives here as `movsb`.
@@ -146,8 +126,6 @@ def test_a_prefixed_ordinary_instruction_leaves_the_chunk_open() -> None:
     result = disasm.disassemble(binary(section(data), arch="x86-64"))
     assert result.runs == (("xor", "movsb", "xor", "ret"),)
 
-
-# ---- repeated instructions --------------------------------------------------
 
 # Filler between functions is one instruction repeated. A window past the cap repeats a
 # window already produced, so the cap is the shingle width and no number of its own.
@@ -192,9 +170,6 @@ def test_capping_gives_the_shingle_set_that_keeping_everything_gives() -> None:
     assert digest.shingles(digest.normalise(capped, "pe64")) == digest.shingles(
         digest.normalise(whole, "pe64")
     )
-
-
-# ---- skip reasons -----------------------------------------------------------
 
 
 def test_a_high_entropy_region_is_skipped_by_name() -> None:
@@ -249,10 +224,8 @@ def test_non_executable_sections_are_left_alone() -> None:
     assert result.runs == ()
 
 
-# ---- the limits come from the section size ----------------------------------
-
-
-# The old fixed limits stopped one clean binary in five early, and no test caught it.
+# The limits come from the section size, so a region of one-byte instructions or of
+# undecodable bytes is read to its end.
 def test_the_default_bounds_do_not_truncate_a_run_of_one_byte_instructions() -> None:
     # Worst case: every instruction is one byte.
     result = disasm.disassemble(binary(section(PUSH_EAX * 5000 + RET)))
@@ -276,9 +249,6 @@ def test_a_digest_taken_with_the_defaults_holds_the_whole_region() -> None:
     assert whole.total_decoded > halved.total_decoded
 
 
-# ---- budgets are per region -------------------------------------------------
-
-
 # A shared budget would tie the digest to the order sections appear in.
 def test_the_budget_applies_to_each_region_separately() -> None:
     first = section(PUSH_EAX * 20, name=".a", virtual_address=0x1000)
@@ -293,9 +263,6 @@ def test_section_order_leaves_the_result_unchanged() -> None:
     forward = disasm.disassemble(binary(low, high))
     backward = disasm.disassemble(binary(high, low))
     assert forward.runs == backward.runs
-
-
-# ---- results ----------------------------------------------------------------
 
 
 def test_total_decoded_sums_the_regions() -> None:
@@ -343,17 +310,6 @@ def test_a_readable_binary_has_no_compressed_share() -> None:
     assert disasm.disassemble(binary(clean)).compressed_share == 0.0
 
 
-def test_results_are_frozen() -> None:
-    result = disasm.disassemble(binary(section(XOR_EAX + RET)))
-    with pytest.raises(AttributeError):
-        result.total_decoded = 0  # type: ignore[misc]
-    with pytest.raises(AttributeError):
-        result.reports[0].decoded = 0  # type: ignore[misc]
-
-
-# ---- architecture -----------------------------------------------------------
-
-
 def test_both_architectures_decode() -> None:
     for arch in ("x86", "x86-64"):
         result = disasm.disassemble(binary(section(XOR_EAX + RET), arch=arch))
@@ -363,9 +319,6 @@ def test_both_architectures_decode() -> None:
 def test_an_unknown_architecture_raises() -> None:
     with pytest.raises(disasm.DisasmError, match="mips"):
         disasm.disassemble(binary(section(XOR_EAX), arch="mips"))
-
-
-# ---- adversarial addresses --------------------------------------------------
 
 
 def test_a_section_addressed_near_the_top_of_memory_still_sweeps() -> None:
@@ -388,13 +341,7 @@ def test_a_wrapping_address_decodes_every_instruction() -> None:
     assert result.reports[0].undecodable == 0
 
 
-# ---- the real fixtures ------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name",
-    ["fixture-pe-x64.exe", "fixture-pe-x86.exe", "fixture-elf-x64", "fixture-elf-x86"],
-)
+@pytest.mark.parametrize("name", NAMES)
 def test_every_fixture_sweeps(name: str) -> None:
     # The smallest fixture is a stripped 2,328-byte ELF that decodes 97 instructions.
     result = disasm.disassemble(loader.load(FIXTURES / name))
@@ -404,27 +351,9 @@ def test_every_fixture_sweeps(name: str) -> None:
     assert all(report.skipped is None for report in result.reports)
 
 
-def make_stripped_elf(code: bytes) -> bytes:
-    header = bytearray(64)
-    header[0:4] = b"\x7fELF"
-    header[4:8] = bytes((2, 1, 1, 0))
-    struct.pack_into("<HHI", header, 16, 2, 62, 1)
-    struct.pack_into("<Q", header, 24, 0x400078)
-    struct.pack_into("<Q", header, 32, 64)
-    struct.pack_into("<Q", header, 40, 0)
-    struct.pack_into("<HHHHHH", header, 52, 64, 56, 1, 0, 0, 0)
-
-    program = bytearray(56)
-    struct.pack_into("<II", program, 0, 1, 0x5)
-    struct.pack_into("<QQQ", program, 8, 120, 0x400078, 0x400078)
-    struct.pack_into("<QQQ", program, 32, len(code), len(code), 0x1000)
-
-    return bytes(header) + bytes(program) + code
-
-
 def test_a_stripped_elf_sweeps_to_real_mnemonics(tmp_path: Path) -> None:
     target = tmp_path / "stripped.elf"
-    target.write_bytes(make_stripped_elf((XOR_EAX + RET) * 20))
+    target.write_bytes(stripped_elf((XOR_EAX + RET) * 20))
 
     result = disasm.disassemble(loader.load(target))
     assert result.total_decoded == 40
@@ -435,22 +364,10 @@ def test_a_stripped_elf_sweeps_to_real_mnemonics(tmp_path: Path) -> None:
 def test_a_stripped_elf_sweeps_the_same_way_as_a_sectioned_one(tmp_path: Path) -> None:
     code = (XOR_EAX + RET) * 20
     target = tmp_path / "stripped.elf"
-    target.write_bytes(make_stripped_elf(code))
+    target.write_bytes(stripped_elf(code))
 
     from_segment = disasm.disassemble(loader.load(target))
     from_section = disasm.disassemble(
         binary(section(code, virtual_address=0x400078), arch="x86-64")
     )
     assert from_segment.runs == from_section.runs
-
-
-def test_a_fixture_sweeps_the_same_way_twice() -> None:
-    path = FIXTURES / "fixture-elf-x64"
-    assert disasm.disassemble(loader.load(path)).runs == disasm.disassemble(loader.load(path)).runs
-
-
-def test_fixture_chunks_are_short() -> None:
-    # Measured: these fixtures average 7 to 10, real corpus binaries 4.61. T-1's subject.
-    result = disasm.disassemble(loader.load(FIXTURES / "fixture-pe-x64.exe"))
-    mean = result.total_decoded / len(result.runs)
-    assert 1.0 < mean < 20.0

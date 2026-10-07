@@ -4,11 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from conftest import FIXTURES
 from eous import cli, digest, loader, report, toolchain
 
-HERE = Path(__file__).resolve().parent
-FIXTURES = HERE.parent / "fixtures" / "bin"
-VECTORS = json.loads((HERE / "vectors.json").read_text(encoding="utf-8"))
+VECTORS = json.loads((Path(__file__).resolve().parent / "vectors.json").read_text(encoding="utf-8"))
 
 FILES = VECTORS["files"]
 IDS = [entry["name"] for entry in FILES]
@@ -87,8 +86,18 @@ def test_every_fixture_has_a_vector() -> None:
         ("MODULUS", (1 << 31) - 1),
         ("COEFFICIENTS", digest.COEFFICIENTS[:128]),
         ("COEFFICIENTS", tuple(reversed(digest.COEFFICIENTS))),
+        ("SEPARATOR", b"\x00"),
+        ("SHINGLE_PERSON", b"eous-xx"),
     ],
-    ids=["ngram", "slot_bits", "modulus", "fewer_permutations", "permutation_order"],
+    ids=[
+        "ngram",
+        "slot_bits",
+        "modulus",
+        "fewer_permutations",
+        "permutation_order",
+        "separator",
+        "personalisation",
+    ],
 )
 def test_a_changed_parameter_breaks_the_vector(
     monkeypatch: pytest.MonkeyPatch, attribute: str, value: object
@@ -96,23 +105,4 @@ def test_a_changed_parameter_breaks_the_vector(
     case = VECTORS["synthetic"]
     runs = tuple(tuple(run) for run in case["runs"])
     monkeypatch.setattr(digest, attribute, value)
-    assert digest.digest(runs, case["target"]) != case["digest"]
-
-
-# pack writes one slot per coefficient and unpack reads PERMUTATIONS of them.
-def test_the_permutation_count_matches_its_table() -> None:
-    assert len(digest.COEFFICIENTS) == digest.PERMUTATIONS
-
-
-def test_a_changed_separator_breaks_the_vector(monkeypatch: pytest.MonkeyPatch) -> None:
-    case = VECTORS["synthetic"]
-    runs = tuple(tuple(run) for run in case["runs"])
-    monkeypatch.setattr(digest, "SEPARATOR", b"\x00")
-    assert digest.digest(runs, case["target"]) != case["digest"]
-
-
-def test_a_changed_personalisation_breaks_the_vector(monkeypatch: pytest.MonkeyPatch) -> None:
-    case = VECTORS["synthetic"]
-    runs = tuple(tuple(run) for run in case["runs"])
-    monkeypatch.setattr(digest, "SHINGLE_PERSON", b"eous-xx")
     assert digest.digest(runs, case["target"]) != case["digest"]

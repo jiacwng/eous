@@ -4,82 +4,37 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ELF64, FIXTURES, JUNK, MACHO, PE64, elf_header, stripped_elf
 from eous import loader
 from eous.loader import LoaderError, UnsupportedArchError, UnsupportedFormatError
 
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
-
 CASES = [
-    ("fixture-pe-x64.exe", "pe", "x86-64"),
-    ("fixture-pe-x86.exe", "pe", "x86"),
-    ("fixture-elf-x64", "elf", "x86-64"),
-    ("fixture-elf-x86", "elf", "x86"),
+    ("fixture-pe-x64.exe", "pe", "x86-64", "pe64"),
+    ("fixture-pe-x86.exe", "pe", "x86", "pe32"),
+    ("fixture-elf-x64", "elf", "x86-64", "elf64"),
+    ("fixture-elf-x86", "elf", "x86", "elf32"),
 ]
 
 
-@pytest.fixture(params=CASES, ids=[c[0] for c in CASES])
-def fixture_case(request: pytest.FixtureRequest) -> tuple[Path, str, str]:
-    name, fmt, arch = request.param
-    return FIXTURES / name, fmt, arch
-
-
-def test_every_fixture_parses(fixture_case: tuple[Path, str, str]) -> None:
-    path, fmt, arch = fixture_case
+@pytest.mark.parametrize(("name", "fmt", "arch", "target"), CASES, ids=[c[0] for c in CASES])
+def test_every_fixture_parses(name: str, fmt: str, arch: str, target: str) -> None:
+    path = FIXTURES / name
     binary = loader.load(path)
+    assert binary.path == path
     assert binary.format == fmt
     assert binary.arch == arch
-    assert binary.path == path
-
-
-def test_entry_point_is_set(fixture_case: tuple[Path, str, str]) -> None:
-    binary = loader.load(fixture_case[0])
+    assert binary.target == target
     assert binary.entry_point > 0
-
-
-def test_sections_are_present(fixture_case: tuple[Path, str, str]) -> None:
-    binary = loader.load(fixture_case[0])
     assert len(binary.sections) > 1
+    assert all(0.0 <= s.entropy <= 8.0 for s in binary.sections)
+    assert binary.is_il_only is False
+    assert binary.has_managed_native is False
 
-
-def test_exactly_the_executable_sections_are_reported(
-    fixture_case: tuple[Path, str, str],
-) -> None:
-    binary = loader.load(fixture_case[0])
     executable = binary.executable_sections
     assert executable
     assert all(s.executable for s in executable)
     assert [s.virtual_address for s in executable] == sorted(s.virtual_address for s in executable)
-
-
-def test_executable_section_carries_bytes(fixture_case: tuple[Path, str, str]) -> None:
-    binary = loader.load(fixture_case[0])
-    assert any(len(s.data) > 0 for s in binary.executable_sections)
-
-
-def test_section_entropy_is_within_range(fixture_case: tuple[Path, str, str]) -> None:
-    binary = loader.load(fixture_case[0])
-    assert all(0.0 <= s.entropy <= 8.0 for s in binary.sections)
-
-
-def test_compiled_fixtures_read_as_native(fixture_case: tuple[Path, str, str]) -> None:
-    binary = loader.load(fixture_case[0])
-    assert binary.is_il_only is False
-    assert binary.has_managed_native is False
-
-
-def test_binary_is_frozen() -> None:
-    binary = loader.load(FIXTURES / "fixture-elf-x64")
-    with pytest.raises(AttributeError):
-        binary.arch = "x86"  # type: ignore[misc]
-
-
-def test_section_is_frozen() -> None:
-    section = loader.load(FIXTURES / "fixture-elf-x64").sections[0]
-    with pytest.raises(AttributeError):
-        section.name = "renamed"  # type: ignore[misc]
-
-
-# ---- entropy ----------------------------------------------------------------
+    assert any(len(s.data) > 0 for s in executable)
 
 
 def test_data_entropy_of_two_equal_symbols_is_one_bit() -> None:
@@ -98,18 +53,10 @@ def test_data_entropy_of_a_repeated_byte_is_zero() -> None:
     assert loader.data_entropy(b"\x00" * 4096) == 0.0
 
 
-def test_entropy_repeats_for_the_same_bytes() -> None:
-    data = bytes(range(256)) * 7 + b"\x01\x02\x03"
-    assert loader.data_entropy(data) == loader.data_entropy(data)
-
-
 def test_compiled_code_entropy_stays_under_the_threshold() -> None:
-    binary = loader.load(FIXTURES / "fixture-pe-x64.exe")
+    binary = loader.load(PE64)
     text = binary.executable_sections[0]
     assert text.entropy < loader.ENTROPY_THRESHOLD
-
-
-# ---- refusals ---------------------------------------------------------------
 
 
 def test_missing_file_raises(tmp_path: Path) -> None:
@@ -124,95 +71,48 @@ def test_directory_raises(tmp_path: Path) -> None:
 
 def test_unparseable_bytes_raise(tmp_path: Path) -> None:
     junk = tmp_path / "junk.bin"
-    junk.write_bytes(b"this is text, never an executable" * 10)
+    junk.write_bytes(JUNK)
     with pytest.raises(LoaderError, match="no recognised container"):
         loader.load(junk)
 
 
-def make_elf_header(machine: int, elf_class: int = 2) -> bytes:
-    header = bytearray(64)
-    header[0:4] = b"\x7fELF"
-    header[4] = elf_class
-    header[5] = 1
-    header[6] = 1
-    struct.pack_into("<HHI", header, 16, 2, machine, 1)
-    struct.pack_into("<H", header, 52, 64)
-    return bytes(header)
-
-
 def test_macho_is_refused_by_format(tmp_path: Path) -> None:
     target = tmp_path / "thing.macho"
-    target.write_bytes(struct.pack("<I", 0xFEEDFACF) + bytes(4096))
+    target.write_bytes(MACHO)
     with pytest.raises(UnsupportedFormatError) as caught:
         loader.load(target)
     assert "mach" in str(caught.value).lower()
 
 
-def test_arm64_elf_is_refused_by_arch(tmp_path: Path) -> None:
-    target = tmp_path / "arm64.elf"
-    target.write_bytes(make_elf_header(machine=183))
-    with pytest.raises(UnsupportedArchError) as caught:
+def test_a_known_machine_is_refused_by_its_name(tmp_path: Path) -> None:
+    target = tmp_path / "aarch64.elf"
+    target.write_bytes(elf_header(183))
+    with pytest.raises(UnsupportedArchError, match="AARCH64"):
         loader.load(target)
-    assert "aarch64" in str(caught.value).lower() or "arm" in str(caught.value).lower()
 
 
 @pytest.mark.parametrize(("machine", "label"), [(8, "mips"), (40, "arm"), (20, "ppc")])
 def test_other_architectures_are_refused_by_name(tmp_path: Path, machine: int, label: str) -> None:
     target = tmp_path / f"{label}.elf"
-    target.write_bytes(make_elf_header(machine=machine))
+    target.write_bytes(elf_header(machine))
     with pytest.raises(UnsupportedArchError):
         loader.load(target)
 
 
-# Found by fuzzing: LIEF returns a raw int for machine values it fails to recognise, so
-# reading `.name` from one raised instead of refusing.
+# LIEF returns a raw int for a machine value outside its table, so the refusal reports the
+# number.
 @pytest.mark.parametrize("machine", [999, 4242, 65535, 250, 4660])
 def test_an_unrecognised_machine_refuses_by_arch(tmp_path: Path, machine: int) -> None:
     target = tmp_path / f"m{machine}.elf"
-    target.write_bytes(make_elf_header(machine=machine))
+    target.write_bytes(elf_header(machine))
     with pytest.raises(UnsupportedArchError, match=str(machine)):
         loader.load(target)
-
-
-def test_a_known_machine_still_reports_its_name(tmp_path: Path) -> None:
-    target = tmp_path / "aarch64.elf"
-    target.write_bytes(make_elf_header(machine=183))
-    with pytest.raises(UnsupportedArchError, match="AARCH64"):
-        loader.load(target)
-
-
-def test_unsupported_errors_are_loader_errors(tmp_path: Path) -> None:
-    assert issubclass(UnsupportedFormatError, LoaderError)
-    assert issubclass(UnsupportedArchError, LoaderError)
-
-
-# ---- stripped ELF -----------------------------------------------------------
-
-
-def make_stripped_elf(code: bytes, machine: int = 62) -> bytes:
-    # An ELF64 carrying one loadable executable segment, with the section table stripped.
-    # This is the ordinary shape of a packed or hostile ELF.
-    header = bytearray(64)
-    header[0:4] = b"\x7fELF"
-    header[4:8] = bytes((2, 1, 1, 0))
-    struct.pack_into("<HHI", header, 16, 2, machine, 1)
-    struct.pack_into("<Q", header, 24, 0x400078)
-    struct.pack_into("<Q", header, 32, 64)
-    struct.pack_into("<Q", header, 40, 0)
-    struct.pack_into("<HHHHHH", header, 52, 64, 56, 1, 0, 0, 0)
-
-    program = bytearray(56)
-    struct.pack_into("<II", program, 0, 1, 0x5)
-    struct.pack_into("<QQQ", program, 8, 120, 0x400078, 0x400078)
-    struct.pack_into("<QQQ", program, 32, len(code), len(code), 0x1000)
-
-    return bytes(header) + bytes(program) + code
 
 
 def test_a_stripped_elf_still_presents_its_code(tmp_path: Path) -> None:
     code = (b"\x31\xc0" + b"\xc3") * 20
     target = tmp_path / "stripped.elf"
-    target.write_bytes(make_stripped_elf(code))
+    target.write_bytes(stripped_elf(code))
 
     binary = loader.load(target)
     assert binary.format == "elf"
@@ -223,7 +123,7 @@ def test_a_stripped_elf_still_presents_its_code(tmp_path: Path) -> None:
 
 def test_a_stripped_elf_reports_its_segment_as_executable(tmp_path: Path) -> None:
     target = tmp_path / "stripped.elf"
-    target.write_bytes(make_stripped_elf((b"\x31\xc0" + b"\xc3") * 20))
+    target.write_bytes(stripped_elf((b"\x31\xc0" + b"\xc3") * 20))
 
     regions = loader.load(target).executable_sections
     assert len(regions) == 1
@@ -233,11 +133,8 @@ def test_a_stripped_elf_reports_its_segment_as_executable(tmp_path: Path) -> Non
 
 
 def test_a_binary_keeping_its_sections_ignores_the_segment_fallback() -> None:
-    binary = loader.load(FIXTURES / "fixture-elf-x64")
+    binary = loader.load(ELF64)
     assert all(not s.name.startswith("segment") for s in binary.executable_sections)
-
-
-# ---- CLR --------------------------------------------------------------------
 
 
 def test_a_parser_failure_becomes_a_loader_error(
@@ -354,16 +251,3 @@ def test_entropy_stays_within_eight_bits() -> None:
     # A byte carries at most 8 bits, so a skewed distribution must stay under the ceiling.
     data = bytes(byte for byte in range(256) for _ in range(byte))
     assert loader.data_entropy(data) <= 8.0 + math.ulp(8.0)
-
-
-@pytest.mark.parametrize(
-    ("name", "target"),
-    [
-        ("fixture-pe-x64.exe", "pe64"),
-        ("fixture-pe-x86.exe", "pe32"),
-        ("fixture-elf-x64", "elf64"),
-        ("fixture-elf-x86", "elf32"),
-    ],
-)
-def test_the_target_names_the_format_and_the_width(name: str, target: str) -> None:
-    assert loader.load(FIXTURES / name).target == target

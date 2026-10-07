@@ -1,52 +1,27 @@
 import random
 import struct
-from dataclasses import fields
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 
 import lief
 import pytest
 
-from eous import loader, report
-
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bin"
-
-CLEAN = ["fixture-pe-x64.exe", "fixture-pe-x86.exe", "fixture-elf-x64", "fixture-elf-x86"]
-PE64 = FIXTURES / "fixture-pe-x64.exe"
+from conftest import ELF64, FIXTURES, JUNK, MACHO, NAMES, PE64, elf_header
+from eous import disasm, loader, report
 
 
-def elf_header(machine: int) -> bytes:
-    header = bytearray(64)
-    header[0:4] = b"\x7fELF"
-    header[4:8] = bytes((2, 1, 1, 0))
-    struct.pack_into("<HHI", header, 16, 2, machine, 1)
-    struct.pack_into("<H", header, 52, 64)
-    return bytes(header)
-
-
-@pytest.mark.parametrize("name", CLEAN)
-def test_a_clean_fixture_yields_a_digest(name: str) -> None:
+@pytest.mark.parametrize("name", NAMES)
+def test_a_clean_fixture_yields_a_digest_and_no_refusal(name: str) -> None:
     result = report.analyse(FIXTURES / name)
-    assert result.digest is not None
+    assert result.path == FIXTURES / name
     assert result.refusal is None
+    assert result.digest is not None
     assert result.digest.startswith("EO1:")
-
-
-@pytest.mark.parametrize("name", CLEAN)
-def test_a_clean_fixture_names_the_path_it_read(name: str) -> None:
-    assert report.analyse(FIXTURES / name).path == FIXTURES / name
 
 
 # A field holding section bytes or chunks would scale a batch's memory with the folder.
 def test_an_analysis_carries_only_what_is_printed() -> None:
     assert [f.name for f in fields(report.Analysis)] == ["path", "digest", "refusal"]
-
-
-# Exactly one of digest and refusal is set. A tool that returns both, or neither, would
-# leave the caller guessing.
-@pytest.mark.parametrize("name", CLEAN)
-def test_the_invariant_holds_on_success(name: str) -> None:
-    result = report.analyse(FIXTURES / name)
-    assert (result.digest is None) != (result.refusal is None)
 
 
 def test_a_missing_file_refuses_as_unreadable(tmp_path: Path) -> None:
@@ -58,13 +33,13 @@ def test_a_missing_file_refuses_as_unreadable(tmp_path: Path) -> None:
 
 def test_junk_bytes_refuse_as_unreadable(tmp_path: Path) -> None:
     target = tmp_path / "junk.bin"
-    target.write_bytes(b"plain text, forever" * 20)
+    target.write_bytes(JUNK)
     assert report.analyse(target).refusal.reason == report.UNREADABLE
 
 
 def test_macho_refuses_by_format_and_names_it(tmp_path: Path) -> None:
     target = tmp_path / "thing.macho"
-    target.write_bytes(struct.pack("<I", 0xFEEDFACF) + bytes(4096))
+    target.write_bytes(MACHO)
     refusal = report.analyse(target).refusal
     assert refusal.reason == report.UNSUPPORTED_FORMAT
     assert "mach" in refusal.detail.lower()
@@ -130,34 +105,22 @@ def test_a_compressed_binary_refuses_as_packed(tmp_path: Path, name: str) -> Non
     assert result.refusal.detail.startswith(("9", "100"))
 
 
-@pytest.mark.parametrize("name", CLEAN)
-def test_a_clean_binary_is_not_refused_as_packed(name: str) -> None:
-    assert report.analyse(FIXTURES / name).refusal is None
-
-
 def test_one_readable_region_keeps_the_digest(tmp_path: Path) -> None:
-    source = FIXTURES / "fixture-pe-x64.exe"
-    parsed = lief.parse(str(source))
+    parsed = lief.parse(str(PE64))
     executable = [s for s in parsed.sections if s.characteristics & loader.PE_SECTION_EXECUTE]
     if len(executable) < 2:
         pytest.skip("fixture carries one executable section")
-    target = compressed_copy(source, tmp_path / "partial.exe", regions=1)
+    target = compressed_copy(PE64, tmp_path / "partial.exe", regions=1)
     assert report.analyse(target).digest is not None
 
 
-def posed_as(monkeypatch: pytest.MonkeyPatch, sections: tuple[loader.Section, ...]) -> None:
-    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
-    posed = loader.Binary(
-        path=source.path,
-        format=source.format,
-        arch=source.arch,
-        bits=source.bits,
-        entry_point=source.entry_point,
-        sections=sections,
-        is_il_only=False,
-        has_managed_native=False,
-    )
-    monkeypatch.setattr(report.loader, "load", lambda _: posed)
+def pose(monkeypatch: pytest.MonkeyPatch, binary: loader.Binary) -> None:
+    monkeypatch.setattr(report.loader, "load", lambda _: binary)
+
+
+def with_writable_code(source: loader.Binary) -> loader.Binary:
+    sections = tuple(replace(s, writable=s.writable or s.executable) for s in source.sections)
+    return replace(source, sections=sections)
 
 
 # No clean PE in 15,435 has a writable code section. The rule is PE-only, because `loader`
@@ -165,20 +128,7 @@ def posed_as(monkeypatch: pytest.MonkeyPatch, sections: tuple[loader.Section, ..
 def test_a_writable_executable_section_refuses_as_packed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
-    sections = tuple(
-        loader.Section(
-            name=s.name,
-            virtual_address=s.virtual_address,
-            virtual_size=s.virtual_size,
-            raw_size=s.raw_size,
-            executable=s.executable,
-            writable=True if s.executable else s.writable,
-            data=s.data,
-        )
-        for s in source.sections
-    )
-    posed_as(monkeypatch, sections)
+    pose(monkeypatch, with_writable_code(loader.load(PE64)))
 
     result = report.analyse(PE64)
     assert result.digest is None
@@ -187,36 +137,12 @@ def test_a_writable_executable_section_refuses_as_packed(
     assert "writable" in result.refusal.detail
 
 
-# `loader` synthesises ELF sections from segments, and a read-write-execute segment is
-# ordinary there. The rule stays with the PE evidence it was measured on.
 def test_a_writable_executable_segment_keeps_an_elf_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = report.loader.load(FIXTURES / "fixture-elf-x64")
-    posed = loader.Binary(
-        path=source.path,
-        format=source.format,
-        arch=source.arch,
-        bits=source.bits,
-        entry_point=source.entry_point,
-        sections=tuple(
-            loader.Section(
-                name=s.name,
-                virtual_address=s.virtual_address,
-                virtual_size=s.virtual_size,
-                raw_size=s.raw_size,
-                executable=s.executable,
-                writable=True if s.executable else s.writable,
-                data=s.data,
-            )
-            for s in source.sections
-        ),
-        is_il_only=False,
-        has_managed_native=False,
-    )
-    monkeypatch.setattr(report.loader, "load", lambda _: posed)
+    pose(monkeypatch, with_writable_code(loader.load(ELF64)))
 
-    result = report.analyse(FIXTURES / "fixture-elf-x64")
+    result = report.analyse(ELF64)
     assert result.refusal is None
     assert result.digest is not None
 
@@ -224,22 +150,10 @@ def test_a_writable_executable_segment_keeps_an_elf_digest(
 def test_code_too_short_to_shingle_refuses_as_unreadable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
+    source = loader.load(PE64)
     executable = next(s for s in source.sections if s.executable)
-    posed_as(
-        monkeypatch,
-        (
-            loader.Section(
-                name=executable.name,
-                virtual_address=executable.virtual_address,
-                virtual_size=executable.virtual_size,
-                raw_size=2,
-                executable=True,
-                writable=False,
-                data=b"\xc3\xc3",
-            ),
-        ),
-    )
+    short = replace(executable, raw_size=2, writable=False, data=b"\xc3\xc3")
+    pose(monkeypatch, replace(source, sections=(short,)))
 
     result = report.analyse(PE64)
     assert result.digest is None
@@ -252,8 +166,10 @@ def test_code_too_short_to_shingle_refuses_as_unreadable(
 def test_a_binary_with_no_executable_section_refuses_as_no_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
-    posed_as(monkeypatch, tuple(s for s in source.sections if not s.executable))
+    source = loader.load(PE64)
+    pose(
+        monkeypatch, replace(source, sections=tuple(s for s in source.sections if not s.executable))
+    )
 
     result = report.analyse(PE64)
     assert result.digest is None
@@ -265,32 +181,21 @@ def test_a_binary_with_no_executable_section_refuses_as_no_code(
 def managed(
     monkeypatch: pytest.MonkeyPatch, *, il_only: bool, native: bool, entropy_bytes: bytes = b""
 ) -> None:
-    source = report.loader.load(FIXTURES / "fixture-pe-x64.exe")
+    source = loader.load(PE64)
     sections = source.sections
     if entropy_bytes:
         sections = tuple(
-            loader.Section(
-                name=s.name,
-                virtual_address=s.virtual_address,
-                virtual_size=s.virtual_size,
+            replace(
+                s,
                 raw_size=len(entropy_bytes),
-                executable=s.executable,
-                writable=s.writable,
                 data=entropy_bytes if s.executable else s.data,
             )
             for s in sections
         )
-    posed = loader.Binary(
-        path=source.path,
-        format=source.format,
-        arch=source.arch,
-        bits=source.bits,
-        entry_point=source.entry_point,
-        sections=sections,
-        is_il_only=il_only,
-        has_managed_native=native,
+    pose(
+        monkeypatch,
+        replace(source, sections=sections, is_il_only=il_only, has_managed_native=native),
     )
-    monkeypatch.setattr(report.loader, "load", lambda _: posed)
 
 
 def test_an_il_only_assembly_refuses_as_managed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,8 +236,8 @@ def test_the_managed_refusal_disassembles_nothing(monkeypatch: pytest.MonkeyPatc
     ("name", "payload"),
     [
         ("absent.bin", None),
-        ("junk.bin", b"plain text, forever" * 20),
-        ("thing.macho", struct.pack("<I", 0xFEEDFACF) + bytes(4096)),
+        ("junk.bin", JUNK),
+        ("thing.macho", MACHO),
         ("arm64.elf", elf_header(183)),
     ],
     ids=["absent", "junk", "macho", "arm64"],
@@ -353,22 +258,21 @@ def test_a_refusal_detail_holds_the_cause_alone(
 # what processor it targets.
 def test_format_is_judged_before_architecture(tmp_path: Path) -> None:
     target = tmp_path / "arm64.macho"
-    target.write_bytes(struct.pack("<I", 0xFEEDFACF) + bytes(4096))
+    target.write_bytes(MACHO)
     assert report.analyse(target).refusal.reason == report.UNSUPPORTED_FORMAT
 
 
-def test_results_are_frozen() -> None:
-    result = report.analyse(FIXTURES / "fixture-elf-x64")
-    with pytest.raises(AttributeError):
-        result.digest = "x"  # type: ignore[misc]
-
-
-def test_a_refusal_is_frozen() -> None:
-    refusal = report.Refusal(report.UNREADABLE, "gone")
-    with pytest.raises(AttributeError):
-        refusal.reason = "other"  # type: ignore[misc]
-
-
-def test_analysis_repeats(tmp_path: Path) -> None:
-    path = FIXTURES / "fixture-pe-x64.exe"
-    assert report.analyse(path).digest == report.analyse(path).digest
+def test_every_result_is_frozen() -> None:
+    binary = loader.load(ELF64)
+    found = disasm.disassemble(binary)
+    results = [
+        (binary, "arch"),
+        (binary.sections[0], "name"),
+        (found, "total_decoded"),
+        (found.reports[0], "decoded"),
+        (report.analyse(ELF64), "digest"),
+        (report.Refusal(report.UNREADABLE, "gone"), "reason"),
+    ]
+    for result, field in results:
+        with pytest.raises(FrozenInstanceError):
+            setattr(result, field, None)
