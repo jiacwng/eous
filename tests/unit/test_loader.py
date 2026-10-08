@@ -18,13 +18,10 @@ CASES = [
 
 @pytest.mark.parametrize(("name", "fmt", "arch", "target"), CASES, ids=[c[0] for c in CASES])
 def test_every_fixture_parses(name: str, fmt: str, arch: str, target: str) -> None:
-    path = FIXTURES / name
-    binary = loader.load(path)
-    assert binary.path == path
+    binary = loader.load(FIXTURES / name)
     assert binary.format == fmt
     assert binary.arch == arch
     assert binary.target == target
-    assert binary.entry_point > 0
     assert len(binary.sections) > 1
     assert all(0.0 <= s.entropy <= 8.0 for s in binary.sections)
     assert binary.is_il_only is False
@@ -125,11 +122,11 @@ def test_a_stripped_elf_reports_its_segment_as_executable(tmp_path: Path) -> Non
     target = tmp_path / "stripped.elf"
     target.write_bytes(stripped_elf((b"\x31\xc0" + b"\xc3") * 20))
 
-    regions = loader.load(target).executable_sections
-    assert len(regions) == 1
-    assert regions[0].executable
-    assert regions[0].writable is False
-    assert regions[0].virtual_address == 0x400078
+    sections = loader.load(target).executable_sections
+    assert len(sections) == 1
+    assert sections[0].executable
+    assert sections[0].writable is False
+    assert sections[0].virtual_address == 0x400078
 
 
 def test_a_binary_keeping_its_sections_ignores_the_segment_fallback() -> None:

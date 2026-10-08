@@ -160,9 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
-        args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+        args = parser.parse_args(argv)
     except SystemExit as exc:
-        # argparse exits 0 after printing help or a version, and 2 on a bad argument.
         return OK if exc.code == 0 else USAGE
 
     if args.version:
@@ -184,15 +183,18 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(exc, OSError) and exc.errno in CLOSED_PIPE:
             _quieten_stdout()
             return OK
-        print(f"eous: internal error: {exc}", file=sys.stderr)
+        _warn(f"internal error: {exc}")
         return INTERNAL
 
     parser.print_usage(sys.stderr)
     return USAGE
 
 
+def _warn(message: str) -> None:
+    print(f"eous: {message}", file=sys.stderr)
+
+
 def _quieten_stdout() -> None:
-    # The reader is gone, so the interpreter's closing flush needs somewhere to land.
     with contextlib.suppress(OSError, ValueError):
         target = sys.stdout.fileno()
         devnull = os.open(os.devnull, os.O_WRONLY)
@@ -204,14 +206,13 @@ def _run_hash(args: argparse.Namespace) -> int:
     paths = _expand(args.paths)
     if not paths:
         named = ", ".join(_readable(str(path)) for path in args.paths)
-        print(f"eous: {named}: no file to hash", file=sys.stderr)
+        _warn(f"{named}: no file to hash")
         return USAGE
 
     labelled = len(paths) > 1 or paths != args.paths
     records: list[dict[str, object]] = []
     refused = False
 
-    # Each result is printed and dropped, so a folder scan holds one file at a time.
     for result in _analyse(paths):
         refused = refused or result.refusal is not None
         if args.json:
@@ -229,60 +230,41 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def _is_file(path: Path) -> bool:
-    try:
-        return path.is_file()
-    except (OSError, ValueError):
-        return False
-
-
-def _is_dir(path: Path) -> bool:
-    try:
-        return path.is_dir()
-    except (OSError, ValueError):
-        return False
-
-
 def _looks_like_a_path(text: str) -> bool:
     return "/" in text or "\\" in text or Path(text).suffix != ""
 
 
 def _as_digest(text: str) -> tuple[str | None, int]:
-    # A path that exists is a file; anything else is read as a digest string.
     path = Path(text)
-    if not _is_file(path):
+    if not os.path.isfile(path):
         if _looks_like_a_path(text):
-            print(f"eous: {_readable(text)}: no such file", file=sys.stderr)
+            _warn(f"{_readable(text)}: no such file")
             return (None, USAGE)
         return (text, OK)
 
     result = report.analyse(path)
-    if result.digest is None:
-        cause = result.refusal
-        reason = f"{cause.reason}: {_readable(cause.detail)}" if cause else "no digest"
-        print(f"eous: {_readable(str(path))}: {reason}", file=sys.stderr)
+    if result.refusal is not None:
+        _warn(_refusal_line(result.path, result.refusal))
         return (None, REFUSED)
     return (result.digest, OK)
 
 
 def _run_compare(args: argparse.Namespace) -> int:
     resolved: list[str] = []
-    labels: list[str] = []
-    for text, side in ((args.left, "left"), (args.right, "right")):
+    named: list[str | None] = []
+    for text in (args.left, args.right):
         found, code = _as_digest(text)
         if found is None:
             return code
         resolved.append(found)
-        labels.append(side if found is text else text)
+        named.append(None if found is text else text)
 
     try:
         scores = digest.compare(resolved[0], resolved[1])
     except digest.DigestError as exc:
-        print(f"eous: {exc}", file=sys.stderr)
+        _warn(str(exc))
         return USAGE
 
-    given = zip((args.left, args.right), resolved, strict=True)
-    named: list[str | None] = [None if found is text else text for text, found in given]
     if args.json:
         print(
             json.dumps(
@@ -295,52 +277,47 @@ def _run_compare(args: argparse.Namespace) -> int:
             )
         )
     else:
+        labels = [name or side for name, side in zip(named, ("left", "right"), strict=True)]
         _print_scores(scores, labels)
     return OK
 
 
-def _read_digests(path: Path) -> tuple[list[str], list[digest.Sketch], int]:
-    """Every digest in the file with its label, and the count of lines holding none."""
+def _read_digests(path: Path) -> tuple[list[str], list[digest.Sketch], int] | None:
     labels: list[str] = []
     sketches: list[digest.Sketch] = []
-    unreadable = 0
+    unparsed = 0
 
-    # PowerShell writes a byte-order mark on every redirect, and `eous hash > known.txt`
-    # is the documented way to build this file.
-    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+    try:
+        # PowerShell writes a byte-order mark on every redirect, and `eous hash > known.txt`
+        # is the documented way to build this file.
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except OSError as exc:
+        _warn(f"{_readable(str(path))}: {exc.strerror}")
+        return None
+
+    for line in lines:
         fields = line.split()
         if not fields:
             continue
         try:
             sketch = digest.parse(fields[-1])
         except digest.DigestError:
-            unreadable += 1
+            unparsed += 1
             continue
-        # `hash` writes the path first, so whatever precedes the digest is the label.
         labels.append(line[: line.rindex(fields[-1])].strip() or fields[-1])
         sketches.append(sketch)
 
-    return labels, sketches, unreadable
-
-
-def _read_known(path: Path, target: str) -> tuple[list[str], list[digest.Sketch], int, int]:
-    """The digests sharing the target, their labels, and what each kind of skip cost."""
-    labels, sketches, unreadable = _read_digests(path)
-    kept = [pair for pair in zip(labels, sketches, strict=True) if pair[1].target == target]
-    return (
-        [label for label, _ in kept],
-        [sketch for _, sketch in kept],
-        len(sketches) - len(kept),
-        unreadable,
-    )
+    if unparsed:
+        _warn(f"{_plural(unparsed, 'line')} did not parse")
+    return labels, sketches, unparsed
 
 
 def _run_match(args: argparse.Namespace) -> int:
     if args.top < 0:
-        print("eous: --top is a count of 0 or more", file=sys.stderr)
+        _warn("--top is a count of 0 or more")
         return USAGE
     if not 0.0 <= args.minimum <= 100.0:
-        print("eous: --min is a percentage from 0 to 100", file=sys.stderr)
+        _warn("--min is a percentage from 0 to 100")
         return USAGE
 
     text, code = _as_digest(args.query)
@@ -350,27 +327,25 @@ def _run_match(args: argparse.Namespace) -> int:
     try:
         query = digest.parse(text)
     except digest.DigestError as exc:
-        print(f"eous: {exc}", file=sys.stderr)
+        _warn(str(exc))
         return USAGE
 
-    try:
-        labels, sketches, other_target, unreadable = _read_known(args.known, query.target)
-    except OSError as exc:
-        print(f"eous: {_readable(str(args.known))}: {exc.strerror}", file=sys.stderr)
+    read = _read_digests(args.known)
+    if read is None:
+        return USAGE
+    labels, sketches, unparsed = read
+    kept = [pair for pair in zip(labels, sketches, strict=True) if pair[1].target == query.target]
+    other_target = len(sketches) - len(kept)
+
+    if not kept:
+        _warn(f"{_readable(str(args.known))}: contains no {query.target} digest")
         return USAGE
 
-    if not sketches:
-        if unreadable:
-            print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
-        print(
-            f"eous: {_readable(str(args.known))}: contains no {query.target} digest",
-            file=sys.stderr,
-        )
-        return USAGE
-
-    scored = digest.similarities(digest.unpack_all(sketches), digest.unpack(query))
-    spread = digest.margins(scored)
-    order = sorted(zip(scored, spread, labels, strict=True), key=lambda row: -row[0])
+    rows = digest.unpack_all([sketch for _, sketch in kept])
+    scored, spread = digest.score(rows, digest.unpack(query))
+    order = sorted(
+        zip(scored, spread, (label for label, _ in kept), strict=True), key=lambda row: -row[0]
+    )
     cleared = [row for row in order if row[0] >= args.minimum]
     ranked = cleared[: args.top]
     below_minimum = len(order) - len(cleared)
@@ -383,7 +358,7 @@ def _run_match(args: argparse.Namespace) -> int:
                     "query": args.query,
                     "target": query.target,
                     "skipped_other_target": other_target,
-                    "unparsed": unreadable,
+                    "unparsed": unparsed,
                     "below_minimum": below_minimum,
                     "matches": [
                         {
@@ -402,17 +377,9 @@ def _run_match(args: argparse.Namespace) -> int:
             print(f"{float(score):5.1f}% +/- {float(margin):3.1f}  {_readable(label)}")
 
     if other_target:
-        print(
-            f"eous: {_plural(other_target, 'digest')} skipped, built for another target",
-            file=sys.stderr,
-        )
-    if unreadable:
-        print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
+        _warn(f"{_plural(other_target, 'digest')} skipped, built for another target")
     if below_minimum:
-        print(
-            f"eous: {_plural(below_minimum, 'digest')} scored below {args.minimum:g}%",
-            file=sys.stderr,
-        )
+        _warn(f"{_plural(below_minimum, 'digest')} scored below {args.minimum:g}%")
     return OK
 
 
@@ -425,24 +392,17 @@ def _by_target(sketches: list[digest.Sketch]) -> dict[str, list[int]]:
 
 def _run_cross(args: argparse.Namespace) -> int:
     if not 0.0 <= args.minimum <= 100.0:
-        print("eous: --min is a percentage from 0 to 100", file=sys.stderr)
+        _warn("--min is a percentage from 0 to 100")
         return USAGE
 
-    try:
-        labels, sketches, unreadable = _read_digests(args.known)
-    except OSError as exc:
-        print(f"eous: {_readable(str(args.known))}: {exc.strerror}", file=sys.stderr)
+    read = _read_digests(args.known)
+    if read is None:
         return USAGE
+    labels, sketches, unparsed = read
 
     grouped = _by_target(sketches)
     if not grouped:
-        if unreadable:
-            print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
-        print(
-            f"eous: {_readable(str(args.known))}: contains fewer than two digests "
-            "of any one target",
-            file=sys.stderr,
-        )
+        _warn(f"{_readable(str(args.known))}: contains fewer than two digests of any one target")
         return USAGE
 
     shown = [_readable(label) for label in labels]
@@ -458,19 +418,17 @@ def _run_cross(args: argparse.Namespace) -> int:
                     "meta": _meta(),
                     "digests": len(sketches),
                     "targets": targets,
-                    "unparsed": unreadable,
+                    "unparsed": unparsed,
                     "skipped_alone_in_target": alone,
                 }
             )
         )
 
-    # One digest against the rows after it, so each pair is scored once.
     for target in targets:
         members = grouped[target]
         rows = digest.unpack_all([sketches[index] for index in members])
         for offset in range(len(members) - 1):
-            scores = digest.similarities(rows[offset + 1 :], rows[offset])
-            spread = digest.margins(scores)
+            scores, spread = digest.score(rows[offset + 1 :], rows[offset])
             left = members[offset]
             total += len(scores)
             for step, (score, margin) in enumerate(zip(scores, spread, strict=True)):
@@ -499,33 +457,25 @@ def _run_cross(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({"pairs_scored": total, "below_minimum": below_minimum}))
 
-    print(f"eous: {_plural(total, 'pair')} scored across {', '.join(targets)}", file=sys.stderr)
+    _warn(f"{_plural(total, 'pair')} scored across {', '.join(targets)}")
     if alone:
-        print(
-            f"eous: {_plural(alone, 'digest')} skipped, alone in its target",
-            file=sys.stderr,
-        )
-    if unreadable:
-        print(f"eous: {_plural(unreadable, 'line')} did not parse", file=sys.stderr)
+        _warn(f"{_plural(alone, 'digest')} skipped, alone in its target")
     if below_minimum:
-        print(
-            f"eous: {_plural(below_minimum, 'pair')} scored below {args.minimum:g}%",
-            file=sys.stderr,
-        )
+        _warn(f"{_plural(below_minimum, 'pair')} scored below {args.minimum:g}%")
     return OK
 
 
 def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
     low = max(0.0, scores.similarity - scores.uncertainty)
     high = min(100.0, scores.similarity + scores.uncertainty)
-    # ASCII only: stdout takes the environment's encoding.
     print(
         f"similarity:  {scores.similarity:.1f}% +/- {scores.uncertainty:.1f} "
         f"({low:.1f}% to {high:.1f}%)"
     )
 
     if scores.left_in_right is None or scores.right_in_left is None:
-        print("containment: n/a (the two differ in size by more than 4x)")
+        ratio = f"{digest.MAX_CONTAINMENT_RATIO:g}x"
+        print(f"containment: n/a (the two differ in size by more than {ratio})")
         return
 
     left, right = (_readable(label) for label in labels)
@@ -559,7 +509,6 @@ def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, obj
 
 
 def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
-    # One file pays more to start a worker than to read itself.
     if len(paths) < 2:
         yield from (report.analyse(path) for path in paths)
         return
@@ -572,7 +521,10 @@ def _expand(paths: list[Path]) -> list[Path]:
     found: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
-        walked = sorted(p for p in path.rglob("*") if _is_file(p)) if _is_dir(path) else [path]
+        if os.path.isdir(path):
+            walked = sorted(p for p in path.rglob("*") if os.path.isfile(p))
+        else:
+            walked = [path]
         for candidate in walked:
             real = candidate.resolve()
             if real not in seen:
@@ -594,14 +546,17 @@ def _readable(text: str) -> str:
     )
 
 
+def _refusal_line(path: Path, refusal: report.Refusal) -> str:
+    return f"{_readable(str(path))}: {refusal.reason}: {_readable(refusal.detail)}"
+
+
 def _print_line(result: report.Analysis, labelled: bool, quiet: bool) -> None:
     if result.digest is not None:
         path = _readable(str(result.path))
         line = f"{path}  {result.digest}" if labelled else result.digest
         print(line, flush=True)
     elif result.refusal is not None and not quiet:
-        reason, detail = result.refusal.reason, _readable(result.refusal.detail)
-        print(f"eous: {_readable(str(result.path))}: {reason}: {detail}", file=sys.stderr)
+        _warn(_refusal_line(result.path, result.refusal))
 
 
 def _as_record(result: report.Analysis) -> dict[str, object]:

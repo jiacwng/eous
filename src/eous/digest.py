@@ -1,6 +1,4 @@
 # Turns straight-line runs of mnemonics into an EO1 digest, and scores digests against each other.
-#
-# A digest reads EO1:target:cardinality:sketch, and every constant below shapes it.
 
 from __future__ import annotations
 
@@ -9,7 +7,6 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from math import sqrt
 
 import numpy
 
@@ -40,7 +37,6 @@ MASK = (1 << SLOT_BITS) - 1
 SKETCH_BYTES = PERMUTATIONS * SLOT_BITS // 8
 SKETCH_HEX = SKETCH_BYTES * 2
 
-# The format and the width together, because a digest compares only against its own kind.
 TARGETS = ("pe32", "pe64", "elf32", "elf64")
 SKETCH_PATTERN = re.compile(f"^[0-9a-f]{{{SKETCH_HEX}}}$")
 
@@ -67,7 +63,6 @@ def _derive_permutations() -> tuple[tuple[int, int], ...]:
 
 COEFFICIENTS = _derive_permutations()
 
-# Hashes are permuted in batches, so memory stays near 8 MB however many shingles there are.
 BLOCK = 4096
 
 
@@ -90,15 +85,16 @@ class _Table:
 def _table(coefficients: tuple[tuple[int, int], ...], modulus: int) -> _Table:
     width = modulus.bit_length()
     split = (width + 1) // 2
+    half = (1 << split) - 1
     multipliers = numpy.array([pair[0] for pair in coefficients], dtype=numpy.uint64).reshape(-1, 1)
     return _Table(
         upper=multipliers >> numpy.uint64(split),
-        lower=multipliers & numpy.uint64((1 << split) - 1),
+        lower=multipliers & numpy.uint64(half),
         offsets=numpy.array([pair[1] for pair in coefficients], dtype=numpy.uint64).reshape(-1, 1),
         modulus=numpy.uint64(modulus),
         width=numpy.uint64(width),
         split=numpy.uint64(split),
-        half=numpy.uint64((1 << split) - 1),
+        half=numpy.uint64(half),
         carry_shift=numpy.uint64(width - split),
         carry=numpy.uint64((1 << (width - split)) - 1),
         two=numpy.uint64(2),
@@ -119,8 +115,7 @@ def _minima(hashes: numpy.ndarray) -> numpy.ndarray:
     table = _table(COEFFICIENTS, MODULUS)
     smallest = numpy.full(len(COEFFICIENTS), MODULUS, dtype=numpy.uint64)
     for start in range(0, hashes.size, BLOCK):
-        # A hash spans the full 64 bits, so it takes two folds to land under the modulus.
-        block = _fold(_fold(hashes[start : start + BLOCK], table), table)
+        block = _fold(hashes[start : start + BLOCK], table)
         upper, lower = block >> table.split, block & table.half
         permuted = _fold(
             _fold(table.two * (table.upper * upper), table)
@@ -194,7 +189,6 @@ def pack(grams: set[tuple[str, ...]]) -> int:
 def digest(runs: tuple[tuple[str, ...], ...], target: str) -> str | None:
     grams = shingles(normalise(runs, target))
     if not grams:
-        # Too little readable code to describe, so the caller names the cause instead.
         return None
 
     return Sketch(VERSION, target, len(grams), pack(grams)).render()
@@ -232,26 +226,12 @@ def unpack_all(sketches: Sequence[Sketch]) -> numpy.ndarray:
     return numpy.stack([unpack(sketch) for sketch in sketches])
 
 
-def _agreement(rows: numpy.ndarray, one: numpy.ndarray) -> numpy.ndarray:
-    matched: numpy.ndarray = numpy.count_nonzero(rows == one, axis=1)
-    return matched / PERMUTATIONS
-
-
-def _jaccard(agreed: numpy.ndarray) -> numpy.ndarray:
+def score(rows: numpy.ndarray, one: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
     # Two unrelated sets already agree on one slot in four, so chance agreement comes off.
-    return numpy.maximum(0.0, (agreed - FLOOR) / (1 - FLOOR))
-
-
-def similarities(rows: numpy.ndarray, one: numpy.ndarray) -> numpy.ndarray:
-    # One sketch against many, so N digests unpack N times and score in one pass.
-    return _jaccard(_agreement(rows, one)) * 100.0
-
-
-def margins(scores: numpy.ndarray) -> numpy.ndarray:
-    # The same sampling error `compare` reports, recovered from the score.
-    agreed = scores / 100.0 * (1 - FLOOR) + FLOOR
-    spread: numpy.ndarray = numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS) / (1 - FLOOR) * 100
-    return spread
+    agreed = numpy.count_nonzero(rows == one, axis=1) / PERMUTATIONS
+    similarity = numpy.maximum(0.0, (agreed - FLOOR) / (1 - FLOOR)) * 100
+    uncertainty = numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS) / (1 - FLOOR) * 100
+    return similarity, uncertainty
 
 
 def compare(left: Sketch | str, right: Sketch | str) -> Scores:
@@ -260,22 +240,19 @@ def compare(left: Sketch | str, right: Sketch | str) -> Scores:
 
     if first.version != second.version:
         raise DigestError(f"versions differ: {first.version} and {second.version}")
-    # Rebuilding for another target changes which instructions appear, so the score lands
-    # where unrelated pairs already sit.
     if first.target != second.target:
         raise DigestError(f"different targets: {first.target} and {second.target}")
 
-    agreed = _agreement(unpack(first).reshape(1, -1), unpack(second))
-    observed = float(agreed[0])
-    overlap = float(_jaccard(agreed)[0])
-    uncertainty = sqrt(observed * (1 - observed) / PERMUTATIONS) / (1 - FLOOR) * 100
+    similarity, uncertainty = score(unpack(first).reshape(1, -1), unpack(second))
+    overlap = float(similarity[0]) / 100
+    spread = float(uncertainty[0])
 
     left_in_right, right_in_left, left_error, right_error = _containment(
-        overlap, uncertainty / 100, first.cardinality, second.cardinality
+        overlap, spread / 100, first.cardinality, second.cardinality
     )
     return Scores(
         similarity=overlap * 100,
-        uncertainty=uncertainty,
+        uncertainty=spread,
         left_in_right=left_in_right,
         right_in_left=right_in_left,
         left_in_right_uncertainty=left_error,
@@ -286,14 +263,11 @@ def compare(left: Sketch | str, right: Sketch | str) -> Scores:
 def _containment(
     jaccard: float, error: float, left: int, right: int
 ) -> tuple[float | None, float | None, float | None, float | None]:
-    # Both directions carry the same information as jaccard plus the two cardinalities.
     smaller, larger = sorted((left, right))
     if smaller == 0 or larger > smaller * MAX_CONTAINMENT_RATIO:
         return (None, None, None, None)
 
     shared = jaccard * (left + right) / (1 + jaccard)
-    # Differentiating the line above: the overlap's own error, amplified by the size gap.
-    # Measured against exact containment, this predicts 21 points at 4x where 23.7 is seen.
     spread = error * (left + right) / (1 + jaccard) ** 2
     return (
         min(1.0, shared / left) * 100,
