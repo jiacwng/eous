@@ -2,12 +2,11 @@
 #
 # Unsupported formats and architectures raise here. Everything else becomes a field.
 
-
 from __future__ import annotations
 
 import struct
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,15 +19,8 @@ lief.logging.disable()
 # 7.0 catches 44.1% of packed files, against 41.7% at 7.2, with the same 0.1% false alarms.
 ENTROPY_THRESHOLD = 7.0
 
-PE_SECTION_EXECUTE = 0x20000000
-PE_SECTION_WRITE = 0x80000000
-ELF_SECTION_EXECUTE = 0x4
-ELF_SECTION_WRITE = 0x1
-ELF_SEGMENT_EXECUTE = 0x1
-ELF_SEGMENT_WRITE = 0x2
-
 CLR_DIRECTORY_KEY = lief.PE.DataDirectory.TYPES.CLR_RUNTIME_HEADER
-COR20_MINIMUM = 72
+COR20_SIZE = 72
 COR20_FLAGS_OFFSET = 16
 COR20_NATIVE_OFFSET = 64
 COR20_IL_ONLY = 0x1
@@ -55,27 +47,22 @@ class UnsupportedArchError(LoaderError):
 class Section:
     name: str
     virtual_address: int
-    virtual_size: int
-    raw_size: int
     executable: bool
     writable: bool
     data: bytes
 
     @property
     def entropy(self) -> float:
-        # Computed on read, since only the executable sections are ever asked.
         return data_entropy(self.data)
 
 
 @dataclass(frozen=True)
 class Binary:
-    path: Path
     format: str
     arch: str
     # ELF names the width in EI_CLASS and PE in the optional header magic. The machine
     # field names the instruction set, and the two disagree on the x32 ABI.
     bits: int
-    entry_point: int
     sections: tuple[Section, ...]
     is_il_only: bool
     has_managed_native: bool
@@ -104,30 +91,23 @@ def read_clr(binary: Any) -> tuple[bool, bool]:
         return (False, False)
 
     try:
-        header = bytes(binary.get_content_from_virtual_address(directory.rva, COR20_MINIMUM))
+        header = bytes(binary.get_content_from_virtual_address(directory.rva, COR20_SIZE))
     except (TypeError, ValueError, RuntimeError):
         header = b""
 
-    if len(header) < COR20_MINIMUM:
-        return (False, False)
-
-    # ECMA-335 fixes this field at 72. Demanding the exact value stops a forged data
-    # directory from pointing at ordinary code and handing us arbitrary flags.
-    declared_size = struct.unpack_from("<I", header, 0)[0]
-    if declared_size != COR20_MINIMUM:
+    # ECMA-335 fixes this field at 72, so a forged directory pointing at ordinary code fails.
+    if len(header) < COR20_SIZE or struct.unpack_from("<I", header, 0)[0] != COR20_SIZE:
         return (False, False)
 
     flags = struct.unpack_from("<I", header, COR20_FLAGS_OFFSET)[0]
     _, native_size = struct.unpack_from("<II", header, COR20_NATIVE_OFFSET)
 
     il_only = bool(flags & COR20_IL_ONLY)
-    # A non-empty ManagedNativeHeader means precompiled native code, whatever IL-only says.
     has_native = native_size != 0
     return (il_only, has_native)
 
 
 def load(path: Path) -> Binary:
-    path = Path(path)
     try:
         directory, regular = path.is_dir(), path.is_file()
     except (OSError, ValueError) as exc:
@@ -146,132 +126,90 @@ def load(path: Path) -> Binary:
         raise LoaderError("no recognised container")
 
     if isinstance(parsed, lief.PE.Binary):
-        return _load_pe(path, parsed)
+        return _load_pe(parsed)
     if isinstance(parsed, lief.ELF.Binary):
-        return _load_elf(path, parsed)
+        return _load_elf(parsed)
 
     family = type(parsed).__module__.rsplit(".", 1)[-1].lower()
     raise UnsupportedFormatError(family)
 
 
-def _load_pe(path: Path, parsed: lief.PE.Binary) -> Binary:
-    machine = _machine_name(lambda: parsed.header.machine)
-    arch = PE_ARCHES.get(machine)
-    if arch is None:
-        raise UnsupportedArchError(machine)
-
+def _load_pe(parsed: lief.PE.Binary) -> Binary:
+    arch = _arch(lambda: parsed.header.machine, PE_ARCHES)
+    characteristics = lief.PE.Section.CHARACTERISTICS
     sections = tuple(
-        _build_section(
-            name=section.name,
+        Section(
+            name=_text(section.name),
             virtual_address=section.virtual_address,
-            virtual_size=section.virtual_size,
-            content=section.content,
-            executable=bool(section.characteristics & PE_SECTION_EXECUTE),
-            writable=bool(section.characteristics & PE_SECTION_WRITE),
+            executable=section.has_characteristic(characteristics.MEM_EXECUTE),
+            writable=section.has_characteristic(characteristics.MEM_WRITE),
+            data=bytes(section.content),
         )
         for section in parsed.sections
     )
     is_il_only, has_managed_native = read_clr(parsed)
 
     return Binary(
-        path=path,
         format="pe",
         arch=arch,
         bits=64 if parsed.optional_header.magic == lief.PE.PE_TYPE.PE32_PLUS else 32,
-        entry_point=parsed.optional_header.addressof_entrypoint,
         sections=sections,
         is_il_only=is_il_only,
         has_managed_native=has_managed_native,
     )
 
 
-def _load_elf(path: Path, parsed: lief.ELF.Binary) -> Binary:
-    machine = _machine_name(lambda: parsed.header.machine_type)
-    arch = ELF_ARCHES.get(machine)
-    if arch is None:
-        raise UnsupportedArchError(machine)
-
+def _load_elf(parsed: lief.ELF.Binary) -> Binary:
+    arch = _arch(lambda: parsed.header.machine_type, ELF_ARCHES)
+    flags = lief.ELF.Section.FLAGS
     sections = tuple(
-        _build_section(
-            name=section.name,
+        Section(
+            name=_text(section.name),
             virtual_address=section.virtual_address,
-            virtual_size=section.size,
-            content=section.content,
-            executable=bool(section.flags & ELF_SECTION_EXECUTE),
-            writable=bool(section.flags & ELF_SECTION_WRITE),
+            executable=section.has(flags.EXECINSTR),
+            writable=section.has(flags.WRITE),
+            data=bytes(section.content),
         )
         for section in parsed.sections
     )
     # A stripped ELF keeps its loadable segments, which is the usual shape of packed ELF.
     if not any(section.executable for section in sections):
-        sections = sections + _executable_segments(parsed)
+        sections = sections + tuple(_executable_segments(parsed))
 
     return Binary(
-        path=path,
         format="elf",
         arch=arch,
         bits=64 if parsed.header.identity_class == lief.ELF.Header.CLASS.ELF64 else 32,
-        entry_point=parsed.header.entrypoint,
         sections=sections,
         is_il_only=False,
         has_managed_native=False,
     )
 
 
-def _executable_segments(parsed: lief.ELF.Binary) -> tuple[Section, ...]:
-    built = []
+def _executable_segments(parsed: lief.ELF.Binary) -> Iterator[Section]:
+    flags = lief.ELF.Segment.FLAGS
     for index, segment in enumerate(parsed.segments):
-        flags = int(segment.flags)
-        if not flags & ELF_SEGMENT_EXECUTE:
-            continue
-        built.append(
-            _build_section(
+        if segment.has(flags.X):
+            yield Section(
                 name=f"segment{index}",
                 virtual_address=segment.virtual_address,
-                virtual_size=segment.virtual_size,
-                content=segment.content,
                 executable=True,
-                writable=bool(flags & ELF_SEGMENT_WRITE),
+                writable=segment.has(flags.W),
+                data=bytes(segment.content),
             )
-        )
-    return tuple(built)
 
 
 def _text(value: str | bytes) -> str:
     return value if isinstance(value, str) else value.decode("utf-8", "replace")
 
 
-def _machine_name(read: Callable[[], object]) -> str:
-    # LIEF raises a Python warning when the machine field holds a value it fails to
-    # recognise, and returns a raw int. Both are handled here rather than reaching stderr.
+def _arch(read: Callable[[], object], arches: dict[str, str]) -> str:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         value = read()
-    return _name_of(value)
-
-
-def _name_of(value: object) -> str:
-    # LIEF hands back an enum for architectures it knows and a raw int for the rest, so a
-    # crafted machine field would otherwise reach `.name` on an integer and raise.
     name = getattr(value, "name", None)
-    return name if isinstance(name, str) else str(value)
-
-
-def _build_section(
-    name: str | bytes,
-    virtual_address: int,
-    virtual_size: int,
-    content: memoryview,
-    executable: bool,
-    writable: bool,
-) -> Section:
-    data = bytes(content)
-    return Section(
-        name=_text(name),
-        virtual_address=virtual_address,
-        virtual_size=virtual_size,
-        raw_size=len(data),
-        executable=executable,
-        writable=writable,
-        data=data,
-    )
+    machine = name if isinstance(name, str) else str(value)
+    arch = arches.get(machine)
+    if arch is None:
+        raise UnsupportedArchError(machine)
+    return arch

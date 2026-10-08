@@ -17,7 +17,7 @@ POOL = [
 # fmt: on
 
 
-def chunk(*mnemonics: str) -> tuple[str, ...]:
+def run(*mnemonics: str) -> tuple[str, ...]:
     return tuple(mnemonics)
 
 
@@ -92,27 +92,27 @@ def test_the_two_personalisations_differ() -> None:
 
 
 def test_mnemonics_become_roots() -> None:
-    result = digest.normalise((chunk("mov", "push", "ret"),), "pe64")
+    result = digest.normalise((run("mov", "push", "ret"),), "pe64")
     assert result == [["mov", "push", "ret"]]
 
 
 def test_an_unknown_mnemonic_becomes_the_oov_token() -> None:
-    result = digest.normalise((chunk("mov", "wibble", "ret"),), "pe64")
+    result = digest.normalise((run("mov", "wibble", "ret"),), "pe64")
     assert result == [["mov", digest.OOV, "ret"]]
 
 
 # Removing it would join two instructions that were apart, inventing a sequence.
 def test_the_unknown_token_keeps_its_position() -> None:
-    result = digest.normalise((chunk("push", "wibble", "pop"),), "pe64")
+    result = digest.normalise((run("push", "wibble", "pop"),), "pe64")
     assert len(result[0]) == 3
     assert result[0][1] == digest.OOV
 
 
-def test_a_chunk_shorter_than_the_window_yields_nothing() -> None:
+def test_a_run_shorter_than_the_window_yields_nothing() -> None:
     assert digest.shingles([["mov"] * (digest.NGRAM - 1)]) == set()
 
 
-def test_a_chunk_exactly_the_window_yields_one() -> None:
+def test_a_run_exactly_the_window_yields_one() -> None:
     assert len(digest.shingles([["mov"] * digest.NGRAM])) == 1
 
 
@@ -121,7 +121,7 @@ def test_windows_slide_by_one() -> None:
     assert len(digest.shingles([tokens])) == 4
 
 
-def test_windows_stay_inside_one_chunk() -> None:
+def test_windows_stay_inside_one_run() -> None:
     half = digest.NGRAM // 2 + 1
     left = [f"a{i}" for i in range(half)]
     right = [f"b{i}" for i in range(half)]
@@ -196,7 +196,7 @@ def test_wholly_unrecognisable_code_still_yields_a_digest() -> None:
 
 # `'²'.isdigit()` is true and `int('²')` raises, so the cardinality is read as ASCII digits.
 def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
-    text = digest.digest((chunk(*(["mov"] * 40)),), "pe64")
+    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="non-negative integer"):
@@ -204,7 +204,7 @@ def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
 
 
 def test_a_cardinality_beyond_float_precision_is_refused() -> None:
-    text = digest.digest((chunk(*(["mov"] * 40)),), "pe64")
+    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="exceeds"):
@@ -212,7 +212,7 @@ def test_a_cardinality_beyond_float_precision_is_refused() -> None:
 
 
 def test_the_largest_representable_cardinality_parses() -> None:
-    text = digest.digest((chunk(*(["mov"] * 40)),), "pe64")
+    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     assert digest.parse(f"EO1:pe64:{digest.MAX_CARDINALITY}:{body}").cardinality == (
@@ -221,7 +221,7 @@ def test_the_largest_representable_cardinality_parses() -> None:
 
 
 def test_too_little_code_yields_no_digest() -> None:
-    assert digest.digest((chunk("mov", "ret"),), "pe64") is None
+    assert digest.digest((run("mov", "ret"),), "pe64") is None
 
 
 def test_no_disassembled_instructions_yield_no_digest() -> None:
@@ -312,19 +312,35 @@ def test_a_table_holds_one_row_per_sketch() -> None:
     assert list(table[3]) == list(digest.unpack(group[3]))
 
 
-# Both paths apply the same chance floor, so any drift between them is a defect.
+# Below chance agreement the score is clamped at zero, and the margin still has to come
+# from the slots that agree.
+def test_the_margin_of_error_comes_from_the_slots_and_not_the_score() -> None:
+    zeros = digest.Sketch("EO1", "pe64", 100, 0)
+    ones = digest.Sketch("EO1", "pe64", 100, int("01" * 256, 2))
+    mixed = digest.Sketch("EO1", "pe64", 100, int("00" * 32 + "01" * 224, 2))
+    assert digest.compare(zeros, ones).uncertainty == 0.0
+    assert digest.compare(zeros, mixed).uncertainty == pytest.approx(2.756, abs=0.001)
+
+    scored, spread = digest.score(digest.unpack_all([ones, mixed]), digest.unpack(zeros))
+    assert list(scored) == [0.0, 0.0]
+    assert float(spread[0]) == 0.0
+    assert float(spread[1]) == pytest.approx(2.756, abs=0.001)
+
+
 def test_the_batch_path_equals_compare_on_every_pair() -> None:
     group = group_of(12)
     table = digest.unpack_all(group)
     for left in group:
-        scored = digest.similarities(table, digest.unpack(left))
+        scored, spread = digest.score(table, digest.unpack(left))
         for index, right in enumerate(group):
-            assert float(scored[index]) == digest.compare(left, right).similarity
+            pair = digest.compare(left, right)
+            assert float(scored[index]) == pair.similarity
+            assert float(spread[index]) == pair.uncertainty
 
 
 def test_a_sketch_scores_full_against_itself_in_a_batch() -> None:
     group = group_of(3)
-    scored = digest.similarities(digest.unpack_all(group), digest.unpack(group[0]))
+    scored, _ = digest.score(digest.unpack_all(group), digest.unpack(group[0]))
     assert float(scored[0]) == 100.0
 
 

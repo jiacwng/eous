@@ -37,8 +37,6 @@ def disassemble(binary: loader.Binary) -> disasm.Disassembly:
 
 
 def analyse(path: Path) -> Analysis:
-    path = Path(path)
-
     try:
         binary = loader.load(path)
     except loader.UnsupportedFormatError as exc:

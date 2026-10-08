@@ -19,7 +19,7 @@ def test_a_clean_fixture_yields_a_digest_and_no_refusal(name: str) -> None:
     assert result.digest.startswith("EO1:")
 
 
-# A field holding section bytes or chunks would scale a batch's memory with the folder.
+# A field holding section bytes or runs would scale a batch's memory with the folder.
 def test_an_analysis_carries_only_what_is_printed() -> None:
     assert [f.name for f in fields(report.Analysis)] == ["path", "digest", "refusal"]
 
@@ -69,9 +69,7 @@ def test_a_pe_for_another_architecture_refuses_by_arch(tmp_path: Path) -> None:
     assert refusal.reason == report.UNSUPPORTED_ARCH
 
 
-def compressed_copy(
-    source: Path, target: Path, *, seed: int = 0, regions: int | None = None
-) -> Path:
+def compressed_copy(source: Path, target: Path, *, seed: int = 0, limit: int | None = None) -> Path:
     # Real container, executable bytes replaced by noise, which is the shape of a packed file.
     parsed = lief.parse(str(source))
     raw = bytearray(source.read_bytes())
@@ -79,13 +77,13 @@ def compressed_copy(
     filled = 0
     for section in parsed.sections:
         executable = (
-            section.characteristics & loader.PE_SECTION_EXECUTE
+            section.has_characteristic(lief.PE.Section.CHARACTERISTICS.MEM_EXECUTE)
             if isinstance(parsed, lief.PE.Binary)
-            else section.flags & loader.ELF_SECTION_EXECUTE
+            else section.has(lief.ELF.Section.FLAGS.EXECINSTR)
         )
         if not executable or not section.size:
             continue
-        if regions is not None and filled >= regions:
+        if limit is not None and filled >= limit:
             continue
         start, size = section.offset, section.size
         raw[start : start + size] = bytes(rng.randrange(256) for _ in range(size))
@@ -105,12 +103,13 @@ def test_a_compressed_binary_refuses_as_packed(tmp_path: Path, name: str) -> Non
     assert result.refusal.detail.startswith(("9", "100"))
 
 
-def test_one_readable_region_keeps_the_digest(tmp_path: Path) -> None:
+def test_one_readable_section_keeps_the_digest(tmp_path: Path) -> None:
     parsed = lief.parse(str(PE64))
-    executable = [s for s in parsed.sections if s.characteristics & loader.PE_SECTION_EXECUTE]
+    execute = lief.PE.Section.CHARACTERISTICS.MEM_EXECUTE
+    executable = [s for s in parsed.sections if s.has_characteristic(execute)]
     if len(executable) < 2:
         pytest.skip("fixture carries one executable section")
-    target = compressed_copy(PE64, tmp_path / "partial.exe", regions=1)
+    target = compressed_copy(PE64, tmp_path / "partial.exe", limit=1)
     assert report.analyse(target).digest is not None
 
 
@@ -152,7 +151,7 @@ def test_code_too_short_to_shingle_refuses_as_unreadable(
 ) -> None:
     source = loader.load(PE64)
     executable = next(s for s in source.sections if s.executable)
-    short = replace(executable, raw_size=2, writable=False, data=b"\xc3\xc3")
+    short = replace(executable, writable=False, data=b"\xc3\xc3")
     pose(monkeypatch, replace(source, sections=(short,)))
 
     result = report.analyse(PE64)
@@ -185,12 +184,7 @@ def managed(
     sections = source.sections
     if entropy_bytes:
         sections = tuple(
-            replace(
-                s,
-                raw_size=len(entropy_bytes),
-                data=entropy_bytes if s.executable else s.data,
-            )
-            for s in sections
+            replace(s, data=entropy_bytes if s.executable else s.data) for s in sections
         )
     pose(
         monkeypatch,
@@ -217,7 +211,7 @@ def test_an_assembly_carrying_native_code_still_digests(monkeypatch: pytest.Monk
     assert report.analyse(PE64).digest is not None
 
 
-# Managed is judged before the sweep, so an il-only assembly never reports as packed.
+# Managed is judged before disassembly, so an il-only assembly never reports as packed.
 def test_managed_is_judged_before_packed(monkeypatch: pytest.MonkeyPatch) -> None:
     managed(monkeypatch, il_only=True, native=False, entropy_bytes=random.randbytes(8192))
     assert report.analyse(PE64).refusal.reason == report.MANAGED
