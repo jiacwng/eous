@@ -211,6 +211,14 @@ def test_a_cardinality_beyond_float_precision_is_refused() -> None:
         digest.parse(f"EO1:pe64:{digest.MAX_CARDINALITY + 1}:{body}")
 
 
+def test_a_cardinality_past_the_integer_conversion_limit_is_refused() -> None:
+    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
+    assert text is not None
+    body = text.rsplit(":", 1)[1]
+    with pytest.raises(DigestError, match="exceeds"):
+        digest.parse(f"EO1:pe64:{'9' * 5000}:{body}")
+
+
 def test_the_largest_representable_cardinality_parses() -> None:
     text = digest.digest((run(*(["mov"] * 40)),), "pe64")
     assert text is not None
