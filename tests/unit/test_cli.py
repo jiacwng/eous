@@ -877,6 +877,17 @@ def test_cross_counts_a_line_that_is_not_a_digest(
     assert "1 line did not parse" in output.readouterr().err
 
 
+def test_cross_prints_targets_in_scan_order(
+    tmp_path: Path, output: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, CLEAN, ELF64, CLEAN, ELF64)
+    assert cli.main(["cross", str(known)]) == cli.OK
+    lines = output.readouterr().out.splitlines()
+    assert len(lines) == 2
+    assert lines[0].endswith(f"{CLEAN}  {CLEAN}")
+    assert lines[1].endswith(f"{ELF64}  {ELF64}")
+
+
 # A collection of N digests holds N(N-1)/2 pairs, so this output is one object per line and
 # is never gathered in memory.
 def test_cross_json_writes_one_object_per_line(
@@ -888,7 +899,7 @@ def test_cross_json_writes_one_object_per_line(
 
     header, *pairs, summary = lines
     assert header["digests"] == 4
-    assert header["targets"] == ["elf64", "pe64"]
+    assert header["targets"] == ["pe64", "elf64"]
     assert header["unparsed"] == 0
     assert summary == {"pairs_scored": 2, "below_minimum": 0}
     assert {row["target"] for row in pairs} == {"elf64", "pe64"}

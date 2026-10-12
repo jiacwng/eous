@@ -423,7 +423,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         return USAGE
 
     shown = [_readable(label) for label in labels]
-    targets = sorted(grouped)
+    targets = list(grouped)
     alone = len(sketches) - sum(len(grouped[target]) for target in targets)
     below_minimum = 0
     total = 0
