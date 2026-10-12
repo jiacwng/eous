@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import io
 import json
 import os
 import sys
@@ -150,36 +151,55 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
+
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return OK if exc.code == 0 else USAGE
 
+    try:
+        code = _dispatch(args)
+        sys.stdout.flush()
+    except Exception as exc:
+        if _closed_pipe(exc):
+            _quieten_stdout()
+            return OK
+        _warn(f"internal error: {exc}")
+        try:
+            sys.stdout.flush()
+        except OSError:
+            _quieten_stdout()
+        return INTERNAL
+
+    if code is None:
+        parser.print_usage(sys.stderr)
+        return USAGE
+    return code
+
+
+def _dispatch(args: argparse.Namespace) -> int | None:
     if args.version:
         print(f"eous {_installed_version()}")
         for name, value in toolchain.engines().items():
             print(f"{name} {value}")
         return OK
+    if args.command == "hash" and args.paths:
+        return _run_hash(args)
+    if args.command == "compare" and args.left and args.right:
+        return _run_compare(args)
+    if args.command == "match" and args.query and args.known:
+        return _run_match(args)
+    if args.command == "cross" and args.known:
+        return _run_cross(args)
+    return None
 
-    try:
-        if args.command == "hash" and args.paths:
-            return _run_hash(args)
-        if args.command == "compare" and args.left and args.right:
-            return _run_compare(args)
-        if args.command == "match" and args.query and args.known:
-            return _run_match(args)
-        if args.command == "cross" and args.known:
-            return _run_cross(args)
-    except Exception as exc:
-        if isinstance(exc, OSError) and exc.errno in CLOSED_PIPE:
-            _quieten_stdout()
-            return OK
-        _warn(f"internal error: {exc}")
-        return INTERNAL
 
-    parser.print_usage(sys.stderr)
-    return USAGE
+def _closed_pipe(exc: Exception) -> bool:
+    return isinstance(exc, OSError) and exc.errno in CLOSED_PIPE
 
 
 def _warn(message: str) -> None:
@@ -205,15 +225,20 @@ def _run_hash(args: argparse.Namespace) -> int:
     records: list[dict[str, object]] = []
     refused = False
 
-    for result in _analyse(paths):
-        refused = refused or result.refusal is not None
-        if args.json:
-            records.append(_as_record(result))
-        else:
-            _print_line(result, labelled=labelled, quiet=args.quiet)
+    try:
+        for result in _analyse(paths):
+            refused = refused or result.refusal is not None
+            if args.json:
+                records.append(_as_record(result))
+            else:
+                _print_line(result, labelled=labelled, quiet=args.quiet)
 
-    if args.json:
-        print(json.dumps({"meta": _meta(), "results": records}, indent=1))
+        if args.json:
+            print(json.dumps({"meta": _meta(), "results": records}, indent=1))
+    except OSError as exc:
+        if not (refused and _closed_pipe(exc)):
+            raise
+        _quieten_stdout()
 
     return REFUSED if refused else OK
 
