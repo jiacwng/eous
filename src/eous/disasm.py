@@ -12,9 +12,6 @@ from iced_x86 import Decoder, FlowControl, Mnemonic
 from eous.loader import BITS, ENTROPY_THRESHOLD, Binary
 
 ENTROPY = "ENTROPY"
-EMPTY = "EMPTY"
-BUDGET = "BUDGET"
-UNDECODABLE = "UNDECODABLE"
 
 CONTINUES = frozenset({FlowControl.NEXT, FlowControl.INTERRUPT})
 
@@ -23,10 +20,6 @@ MNEMONICS = {
     for name, value in vars(Mnemonic).items()
     if name.isupper() and isinstance(value, int)
 }
-
-
-class DisasmError(Exception):
-    pass
 
 
 @dataclass(frozen=True)
@@ -56,23 +49,14 @@ class Disassembly:
 def disassemble(
     binary: Binary,
     *,
-    max_instructions: int | None = None,
-    max_undecodable: int | None = None,
     repeat_cap: int | None = None,
     minimum_run: int = 1,
 ) -> Disassembly:
-    bitness = BITS.get(binary.arch)
-    if bitness is None:
-        raise DisasmError(f"no decoder for architecture {binary.arch}")
-
+    bitness = BITS[binary.arch]
     runs: list[tuple[str, ...]] = []
     reports: list[SectionReport] = []
 
     for section in binary.executable_sections:
-        if not section.data:
-            reports.append(SectionReport(section.name, 0, EMPTY, 0, len(section.data)))
-            continue
-
         if section.entropy >= ENTROPY_THRESHOLD:
             reports.append(SectionReport(section.name, 0, ENTROPY, 0, len(section.data)))
             continue
@@ -81,8 +65,6 @@ def disassemble(
             data=section.data,
             name=section.name,
             bitness=bitness,
-            max_instructions=max_instructions,
-            max_undecodable=max_undecodable,
             repeat_cap=repeat_cap,
             minimum_run=minimum_run,
         )
@@ -100,20 +82,15 @@ def _disassemble_section(
     data: bytes,
     name: str,
     bitness: int,
-    max_instructions: int | None,
-    max_undecodable: int | None,
     repeat_cap: int | None,
     minimum_run: int,
 ) -> tuple[list[tuple[str, ...]], SectionReport]:
     decoder = Decoder(bitness, data)
-    budget = len(data) if max_instructions is None else max_instructions
-    ceiling = len(data) if max_undecodable is None else max_undecodable
 
     runs: list[tuple[str, ...]] = []
     current: list[str] = []
     decoded = 0
     undecodable = 0
-    skipped: str | None = None
     repeated = 0
     previous = ""
 
@@ -127,13 +104,6 @@ def _disassemble_section(
         previous = ""
 
     while decoder.can_decode:
-        if decoded >= budget:
-            skipped = BUDGET
-            break
-        if undecodable >= ceiling:
-            skipped = UNDECODABLE
-            break
-
         position = decoder.position
         instruction = decoder.decode()
 
@@ -156,5 +126,5 @@ def _disassemble_section(
 
     close_run()
     return runs, SectionReport(
-        name=name, decoded=decoded, skipped=skipped, undecodable=undecodable, size=len(data)
+        name=name, decoded=decoded, skipped=None, undecodable=undecodable, size=len(data)
     )
