@@ -196,7 +196,7 @@ def test_wholly_unrecognisable_code_still_yields_a_digest() -> None:
 
 # `'²'.isdigit()` is true and `int('²')` raises, so the cardinality is read as ASCII digits.
 def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
-    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
+    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="non-negative integer"):
@@ -204,7 +204,7 @@ def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
 
 
 def test_a_cardinality_beyond_float_precision_is_refused() -> None:
-    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
+    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="exceeds"):
@@ -212,7 +212,7 @@ def test_a_cardinality_beyond_float_precision_is_refused() -> None:
 
 
 def test_a_cardinality_past_the_integer_conversion_limit_is_refused() -> None:
-    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
+    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="exceeds"):
@@ -220,7 +220,7 @@ def test_a_cardinality_past_the_integer_conversion_limit_is_refused() -> None:
 
 
 def test_the_largest_representable_cardinality_parses() -> None:
-    text = digest.digest((run(*(["mov"] * 40)),), "pe64")
+    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     assert digest.parse(f"EO1:pe64:{digest.MAX_CARDINALITY}:{body}").cardinality == (
