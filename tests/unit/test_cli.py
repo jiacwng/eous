@@ -1,6 +1,8 @@
 import errno
 import io
 import json
+import os
+import subprocess
 import sys
 from functools import cache
 from pathlib import Path
@@ -243,6 +245,67 @@ def test_einval_stays_internal_away_from_windows(
 ) -> None:
     monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EINVAL))
     assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
+
+
+def test_a_refusal_outlives_a_closed_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    junk = tmp_path / "junk.bin"
+    junk.write_bytes(JUNK)
+    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EPIPE))
+    assert cli.main(["hash", str(junk), str(CLEAN)]) == cli.REFUSED
+
+
+def run_eous(*args: str, **env: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [sys.executable, "-m", "eous.cli", *args],
+        capture_output=True,
+        env={**os.environ, **env},
+        timeout=120,
+        check=False,
+    )
+
+
+# Output is buffered, so these run in a real process, where the final flush happens.
+@pytest.mark.parametrize(
+    "args",
+    [["hash", "--json", str(CLEAN)], ["compare", str(CLEAN), str(CLEAN)], ["--version"]],
+    ids=["hash-json", "compare", "version"],
+)
+def test_a_closed_reader_exits_zero_in_a_real_process(args: list[str]) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-m", "eous.cli", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdout is not None and process.stderr is not None
+    process.stdout.close()
+    err = process.stderr.read()
+    assert process.wait(timeout=120) == cli.OK
+    assert err == b""
+
+
+@pytest.mark.skipif(not Path("/dev/full").exists(), reason="needs a device that is always full")
+def test_a_full_device_exits_as_an_internal_error() -> None:
+    with open("/dev/full", "w") as full:
+        process = subprocess.run(
+            [sys.executable, "-m", "eous.cli", "hash", str(CLEAN)],
+            stdout=full,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+    assert process.returncode == cli.INTERNAL
+    assert process.stderr.count(b"\n") == 1
+
+
+def test_a_name_the_terminal_cannot_encode_is_escaped(tmp_path: Path) -> None:
+    accented = tmp_path / "café.exe"
+    accented.write_bytes(CLEAN.read_bytes())
+    process = run_eous("hash", str(accented), str(CLEAN), PYTHONIOENCODING="ascii")
+    assert process.returncode == cli.OK
+    assert b"caf\\xe9.exe  EO1:" in process.stdout
+    assert process.stdout.count(b"EO1:") == 2
 
 
 def test_quietening_stdout_swallows_what_follows(

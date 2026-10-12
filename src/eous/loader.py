@@ -105,7 +105,12 @@ def load(path: Path) -> Binary:
         raise LoaderError("file is absent")
 
     try:
-        parsed = lief.parse(str(path))
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise LoaderError(f"cannot read: {exc.strerror}") from exc
+
+    try:
+        parsed = lief.parse(raw)
     except Exception as exc:
         raise LoaderError(f"cannot parse: {exc}") from exc
 
