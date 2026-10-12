@@ -89,6 +89,23 @@ def test_macho_is_refused_by_format(tmp_path: Path) -> None:
     assert "mach" in str(caught.value).lower()
 
 
+def test_an_elf_naming_no_machine_is_unreadable(tmp_path: Path) -> None:
+    target = tmp_path / "none.elf"
+    target.write_bytes(elf_header(0))
+    with pytest.raises(LoaderError, match="no machine named") as caught:
+        loader.load(target)
+    assert not isinstance(caught.value, UnsupportedArchError)
+
+
+@pytest.mark.parametrize("size", [4, 7])
+def test_an_elf_stub_is_unreadable(tmp_path: Path, size: int) -> None:
+    target = tmp_path / "stub.elf"
+    target.write_bytes(elf_header(62)[:size])
+    with pytest.raises(LoaderError) as caught:
+        loader.load(target)
+    assert not isinstance(caught.value, UnsupportedArchError)
+
+
 def test_a_known_machine_is_refused_by_its_name(tmp_path: Path) -> None:
     target = tmp_path / "aarch64.elf"
     target.write_bytes(elf_header(183))

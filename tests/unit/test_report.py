@@ -229,6 +229,12 @@ def test_half_the_code_compressed_refuses_as_packed(monkeypatch: pytest.MonkeyPa
     assert result.refusal == report.Refusal(report.PACKED, "50% of executable code is compressed")
 
 
+def test_filler_alone_refuses_as_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    for filler in (b"\x90", b"\xcc", b"\x00\x00"):
+        result = with_code(monkeypatch, filler * 32768)
+        assert result.refusal == report.Refusal(report.UNREADABLE, "too little readable code")
+
+
 def test_an_empty_section_is_not_packed(monkeypatch: pytest.MonkeyPatch) -> None:
     result = with_code(monkeypatch, b"")
     assert result.refusal == report.Refusal(report.UNREADABLE, "too little readable code")
