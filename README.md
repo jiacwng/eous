@@ -18,7 +18,7 @@ EO1:pe32:40045:780e1dde12b1bc2283e0bb3e4f33fb2cfe5e4a69e95ef4ef03a523b3ee...
 ## Install
 
 ```
-pip install eous
+pip install https://github.com/jiacwng/eous/releases/download/v0.1.0/eous-0.1.0-py3-none-any.whl
 ```
 
 Python 3.11 or later. LIEF parses PE and ELF, iced-x86 disassembles, numpy is used for MinHash and arithmetic.
