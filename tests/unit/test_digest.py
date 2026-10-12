@@ -21,8 +21,8 @@ def run(*mnemonics: str) -> tuple[str, ...]:
     return tuple(mnemonics)
 
 
-def straight(length: int, mnemonic: str = "mov") -> tuple[tuple[str, ...], ...]:
-    return (tuple([mnemonic] * length),)
+def straight(length: int) -> tuple[tuple[str, ...], ...]:
+    return (tuple((["mov", "push"] * length)[:length]),)
 
 
 def varied(length: int, seed: int) -> list[str]:
@@ -188,10 +188,8 @@ def test_cardinality_counts_distinct_shingles() -> None:
 # Every window here holds only the unknown token, so the digest describes nothing and two
 # such files score 100% against each other. No window in 4,310,529 taken from real binaries
 # is entirely unknown.
-def test_wholly_unrecognisable_code_still_yields_a_digest() -> None:
-    text = digest.digest((tuple(f"wibble{i}" for i in range(400)),), "pe64")
-    assert text is not None
-    assert digest.parse(text).cardinality == 1
+def test_wholly_unrecognisable_code_yields_no_digest() -> None:
+    assert digest.digest((tuple(f"wibble{i}" for i in range(400)),), "pe64") is None
 
 
 # `'²'.isdigit()` is true and `int('²')` raises, so the cardinality is read as ASCII digits.
@@ -226,6 +224,10 @@ def test_the_largest_representable_cardinality_parses() -> None:
     assert digest.parse(f"EO1:pe64:{digest.MAX_CARDINALITY}:{body}").cardinality == (
         digest.MAX_CARDINALITY
     )
+
+
+def test_code_of_one_repeated_root_yields_no_digest() -> None:
+    assert digest.digest((run(*(["nop"] * 40)),), "pe64") is None
 
 
 def test_too_little_code_yields_no_digest() -> None:

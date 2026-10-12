@@ -187,7 +187,7 @@ def pack(grams: set[tuple[str, ...]]) -> int:
 def digest(runs: tuple[tuple[str, ...], ...], target: str) -> str | None:
     _check_target(target)
     grams = shingles(normalise(runs))
-    if not grams:
+    if len({root for gram in grams for root in gram}) < 2:
         return None
 
     return Sketch(target, len(grams), pack(grams)).render()
