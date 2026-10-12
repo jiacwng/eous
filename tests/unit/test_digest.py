@@ -1,6 +1,5 @@
 import random
 
-import numpy
 import pytest
 
 from conftest import FIXTURES, NAMES
@@ -371,7 +370,6 @@ def test_uncertainty_is_reported_and_bounded() -> None:
     assert 0.0 <= scores.uncertainty < 20.0
 
 
-# 256 agreeing slots bound the shared share from below, so full agreement still has a margin.
 def test_identical_sketches_keep_a_margin() -> None:
     text = digest.digest(straight(60), "pe64")
     assert text is not None
@@ -380,10 +378,10 @@ def test_identical_sketches_keep_a_margin() -> None:
     assert scores.uncertainty == pytest.approx(0.519, abs=0.001)
 
 
-def test_the_margin_matches_the_textbook_one_in_the_middle() -> None:
-    half = numpy.array([0.5])
-    wald = numpy.sqrt(0.25 / digest.PERMUTATIONS)
-    assert float(digest._wilson_margin(half)[0]) == pytest.approx(wald, rel=0.01)
+def test_half_the_slots_agreeing_keeps_the_usual_margin() -> None:
+    zeros = digest.Sketch("pe64", 100, 0)
+    half = digest.Sketch("pe64", 100, int("00" * 128 + "01" * 128, 2))
+    assert digest.compare(zeros, half).uncertainty == pytest.approx(4.159, abs=0.001)
 
 
 def test_containment_is_reported_both_ways_at_similar_sizes() -> None:

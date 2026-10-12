@@ -402,6 +402,8 @@ def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[s
     assert "containment:" in out
     lines = [line for line in out.splitlines() if "in" in line]
     assert len(lines) == 2
+    assert "100.0% +/- 0.5 (99.5% to 100.0%)" in out
+    assert all(line.endswith("100.0% +/- 0.3") for line in lines[-2:])
     assert all("fixture-pe-x64.exe" in line for line in lines)
 
 

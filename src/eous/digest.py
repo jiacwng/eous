@@ -233,9 +233,11 @@ def score(rows: numpy.ndarray, one: numpy.ndarray) -> tuple[numpy.ndarray, numpy
 
 
 def _wilson_margin(agreed: numpy.ndarray) -> numpy.ndarray:
-    shrink = 1 + 1 / PERMUTATIONS
-    centre = (agreed + 1 / (2 * PERMUTATIONS)) / shrink
-    half = numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS + 1 / (4 * PERMUTATIONS**2)) / shrink
+    denominator = 1 + 1 / PERMUTATIONS
+    centre = (agreed + 1 / (2 * PERMUTATIONS)) / denominator
+    half = (
+        numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS + 1 / (4 * PERMUTATIONS**2)) / denominator
+    )
     margin: numpy.ndarray = numpy.maximum(agreed - (centre - half), centre + half - agreed)
     return margin
 
