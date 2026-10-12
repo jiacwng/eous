@@ -402,6 +402,8 @@ def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[s
     assert "containment:" in out
     lines = [line for line in out.splitlines() if "in" in line]
     assert len(lines) == 2
+    assert "100.0% +/- 0.5 (99.5% to 100.0%)" in out
+    assert all(line.endswith("100.0% +/- 0.3") for line in lines[-2:])
     assert all("fixture-pe-x64.exe" in line for line in lines)
 
 
@@ -693,7 +695,7 @@ def test_match_json_carries_the_target_and_the_ranking(
     payload = json.loads(output.readouterr().out)
     assert payload["target"] == "pe64"
     assert payload["skipped_other_target"] == 1
-    assert payload["matches"][0]["uncertainty"] == pytest.approx(0.0)
+    assert payload["matches"][0]["uncertainty"] == pytest.approx(0.519, abs=0.001)
     assert payload["matches"][0]["similarity"] == pytest.approx(100.0)
 
 

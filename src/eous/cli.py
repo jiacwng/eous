@@ -62,8 +62,8 @@ examples:
 
 reading a comparison:
   similarity:  36.5% +/- 4.2 (32.3% to 40.6%)
-  containment: old.exe in new.exe   96.0% +/- 8
-               new.exe in old.exe   37.0% +/- 3
+  containment: old.exe in new.exe   96.0% +/- 8.0
+               new.exe in old.exe   37.0% +/- 3.1
 
   The +/- figure is the margin of error, since 256 slots estimate the overlap.
   It narrows as scores approach 100%. Two results whose ranges overlap are
@@ -508,11 +508,11 @@ def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
     width = max(len(left), len(right))
     print(
         f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%"
-        f" +/- {scores.left_in_right_uncertainty:.0f}"
+        f" +/- {scores.left_in_right_uncertainty:.1f}"
     )
     print(
         f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%"
-        f" +/- {scores.right_in_left_uncertainty:.0f}"
+        f" +/- {scores.right_in_left_uncertainty:.1f}"
     )
 
 
