@@ -2,10 +2,11 @@ import math
 import struct
 from pathlib import Path
 
+import lief
 import pytest
 
 from conftest import ELF64, FIXTURES, JUNK, MACHO, PE64, elf_header, stripped_elf
-from eous import loader
+from eous import loader, report
 from eous.loader import LoaderError, UnsupportedArchError, UnsupportedFormatError
 
 CASES = [
@@ -22,16 +23,23 @@ def test_every_fixture_parses(name: str, fmt: str, arch: str, target: str) -> No
     assert binary.format == fmt
     assert binary.arch == arch
     assert binary.target == target
-    assert len(binary.sections) > 1
-    assert all(0.0 <= s.entropy <= 8.0 for s in binary.sections)
     assert binary.is_il_only is False
     assert binary.has_managed_native is False
 
-    executable = binary.executable_sections
-    assert executable
-    assert all(s.executable for s in executable)
-    assert [s.virtual_address for s in executable] == sorted(s.virtual_address for s in executable)
-    assert any(len(s.data) > 0 for s in executable)
+    sections = binary.sections
+    assert sections
+    assert all(0.0 <= loader.data_entropy(s.data) <= 8.0 for s in sections)
+    assert [s.virtual_address for s in sections] == sorted(s.virtual_address for s in sections)
+    assert any(len(s.data) > 0 for s in sections)
+
+
+def test_only_executable_sections_are_kept() -> None:
+    parsed = lief.PE.parse(str(PE64))
+    assert parsed is not None
+    execute = lief.PE.Section.CHARACTERISTICS.MEM_EXECUTE
+    expected = {s.name for s in parsed.sections if s.has_characteristic(execute)}
+    assert len(expected) < len(parsed.sections)
+    assert {s.name for s in loader.load(PE64).sections} == expected
 
 
 def test_data_entropy_of_two_equal_symbols_is_one_bit() -> None:
@@ -52,8 +60,8 @@ def test_data_entropy_of_a_repeated_byte_is_zero() -> None:
 
 def test_compiled_code_entropy_stays_under_the_threshold() -> None:
     binary = loader.load(PE64)
-    text = binary.executable_sections[0]
-    assert text.entropy < loader.ENTROPY_THRESHOLD
+    text = binary.sections[0]
+    assert loader.data_entropy(text.data) < report.ENTROPY_THRESHOLD
 
 
 def test_missing_file_raises(tmp_path: Path) -> None:
@@ -114,24 +122,24 @@ def test_a_stripped_elf_still_presents_its_code(tmp_path: Path) -> None:
     binary = loader.load(target)
     assert binary.format == "elf"
     assert binary.arch == "x86-64"
-    assert binary.executable_sections
-    assert b"".join(s.data for s in binary.executable_sections) == code
+    assert binary.sections
+    assert b"".join(s.data for s in binary.sections) == code
 
 
 def test_a_stripped_elf_reports_its_segment_as_executable(tmp_path: Path) -> None:
     target = tmp_path / "stripped.elf"
     target.write_bytes(stripped_elf((b"\x31\xc0" + b"\xc3") * 20))
 
-    sections = loader.load(target).executable_sections
+    sections = loader.load(target).sections
     assert len(sections) == 1
-    assert sections[0].executable
+    assert sections[0].name == "segment0"
     assert sections[0].writable is False
     assert sections[0].virtual_address == 0x400078
 
 
 def test_a_binary_keeping_its_sections_ignores_the_segment_fallback() -> None:
     binary = loader.load(ELF64)
-    assert all(not s.name.startswith("segment") for s in binary.executable_sections)
+    assert all(not s.name.startswith("segment") for s in binary.sections)
 
 
 def test_a_parser_failure_becomes_a_loader_error(

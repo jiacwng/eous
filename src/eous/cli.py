@@ -100,7 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
         "A directory is walked, and every file under it is digested.",
     )
     hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE-OR-DIR")
-    hash_command.add_argument("--json", action="store_true", help="machine-readable output")
     hash_command.add_argument(
         "--quiet", action="store_true", help="suppress the refusal lines on stderr"
     )
@@ -112,7 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare_command.add_argument("left", nargs="?", metavar="FILE-OR-DIGEST")
     compare_command.add_argument("right", nargs="?", metavar="FILE-OR-DIGEST")
-    compare_command.add_argument("--json", action="store_true", help="machine-readable output")
 
     match_command = commands.add_parser(
         "match",
@@ -126,15 +124,6 @@ def build_parser() -> argparse.ArgumentParser:
     match_command.add_argument(
         "--top", type=int, default=10, help="how many results to print, default 10"
     )
-    match_command.add_argument(
-        "--min",
-        type=float,
-        default=0.0,
-        dest="minimum",
-        metavar="PERCENT",
-        help="omit results scoring below this percentage",
-    )
-    match_command.add_argument("--json", action="store_true", help="machine-readable output")
 
     cross_command = commands.add_parser(
         "cross",
@@ -144,15 +133,18 @@ def build_parser() -> argparse.ArgumentParser:
         "target, since two digests compare only when their targets match.",
     )
     cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
-    cross_command.add_argument(
-        "--min",
-        type=float,
-        default=0.0,
-        dest="minimum",
-        metavar="PERCENT",
-        help="omit results scoring below this percentage",
-    )
-    cross_command.add_argument("--json", action="store_true", help="machine-readable output")
+
+    for command in (match_command, cross_command):
+        command.add_argument(
+            "--min",
+            type=float,
+            default=0.0,
+            dest="minimum",
+            metavar="PERCENT",
+            help="omit results scoring below this percentage",
+        )
+    for command in (hash_command, compare_command, match_command, cross_command):
+        command.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
 
@@ -374,7 +366,7 @@ def _run_match(args: argparse.Namespace) -> int:
         )
     else:
         for score, margin, label in ranked:
-            print(f"{float(score):5.1f}% +/- {float(margin):3.1f}  {_readable(label)}")
+            print(f"{_scored(score, margin)}  {_readable(label)}")
 
     if other_target:
         _warn(f"{_plural(other_target, 'digest')} skipped, built for another target")
@@ -449,10 +441,7 @@ def _run_cross(args: argparse.Namespace) -> int:
                         )
                     )
                 else:
-                    print(
-                        f"{float(score):5.1f}% +/- {float(margin):3.1f}  "
-                        f"{shown[left]}  {shown[right]}"
-                    )
+                    print(f"{_scored(score, margin)}  {shown[left]}  {shown[right]}")
 
     if args.json:
         print(json.dumps({"pairs_scored": total, "below_minimum": below_minimum}))
@@ -465,9 +454,19 @@ def _run_cross(args: argparse.Namespace) -> int:
     return OK
 
 
+def _scored(score: float, margin: float) -> str:
+    return f"{float(score):5.1f}% +/- {float(margin):3.1f}"
+
+
+def _bounds(scores: digest.Scores) -> tuple[float, float]:
+    return (
+        max(0.0, scores.similarity - scores.uncertainty),
+        min(100.0, scores.similarity + scores.uncertainty),
+    )
+
+
 def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
-    low = max(0.0, scores.similarity - scores.uncertainty)
-    high = min(100.0, scores.similarity + scores.uncertainty)
+    low, high = _bounds(scores)
     print(
         f"similarity:  {scores.similarity:.1f}% +/- {scores.uncertainty:.1f} "
         f"({low:.1f}% to {high:.1f}%)"
@@ -494,13 +493,14 @@ def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, obj
     def rounded(value: float | None) -> float | None:
         return None if value is None else round(value, 4)
 
+    low, high = _bounds(scores)
     return {
         "left": labels[0],
         "right": labels[1],
         "similarity": round(scores.similarity, 4),
         "uncertainty": round(scores.uncertainty, 4),
-        "low": round(max(0.0, scores.similarity - scores.uncertainty), 4),
-        "high": round(min(100.0, scores.similarity + scores.uncertainty), 4),
+        "low": round(low, 4),
+        "high": round(high, 4),
         "left_in_right": rounded(scores.left_in_right),
         "right_in_left": rounded(scores.right_in_left),
         "left_in_right_uncertainty": rounded(scores.left_in_right_uncertainty),

@@ -16,9 +16,6 @@ import numpy
 
 lief.logging.disable()
 
-# 7.0 catches 44.1% of packed files, against 41.7% at 7.2, with the same 0.1% false alarms.
-ENTROPY_THRESHOLD = 7.0
-
 CLR_DIRECTORY_KEY = lief.PE.DataDirectory.TYPES.CLR_RUNTIME_HEADER
 COR20_SIZE = 72
 COR20_FLAGS_OFFSET = 16
@@ -47,13 +44,8 @@ class UnsupportedArchError(LoaderError):
 class Section:
     name: str
     virtual_address: int
-    executable: bool
     writable: bool
     data: bytes
-
-    @property
-    def entropy(self) -> float:
-        return data_entropy(self.data)
 
 
 @dataclass(frozen=True)
@@ -66,11 +58,6 @@ class Binary:
     sections: tuple[Section, ...]
     is_il_only: bool
     has_managed_native: bool
-
-    @property
-    def executable_sections(self) -> tuple[Section, ...]:
-        executable = [s for s in self.sections if s.executable]
-        return tuple(sorted(executable, key=lambda s: s.virtual_address))
 
     @property
     def target(self) -> str:
@@ -137,23 +124,23 @@ def load(path: Path) -> Binary:
 def _load_pe(parsed: lief.PE.Binary) -> Binary:
     arch = _arch(lambda: parsed.header.machine, PE_ARCHES)
     characteristics = lief.PE.Section.CHARACTERISTICS
-    sections = tuple(
+    sections = [
         Section(
             name=_text(section.name),
             virtual_address=section.virtual_address,
-            executable=section.has_characteristic(characteristics.MEM_EXECUTE),
             writable=section.has_characteristic(characteristics.MEM_WRITE),
             data=bytes(section.content),
         )
         for section in parsed.sections
-    )
+        if section.has_characteristic(characteristics.MEM_EXECUTE)
+    ]
     is_il_only, has_managed_native = read_clr(parsed)
 
     return Binary(
         format="pe",
         arch=arch,
         bits=64 if parsed.optional_header.magic == lief.PE.PE_TYPE.PE32_PLUS else 32,
-        sections=sections,
+        sections=_ordered(sections),
         is_il_only=is_il_only,
         has_managed_native=has_managed_native,
     )
@@ -162,25 +149,25 @@ def _load_pe(parsed: lief.PE.Binary) -> Binary:
 def _load_elf(parsed: lief.ELF.Binary) -> Binary:
     arch = _arch(lambda: parsed.header.machine_type, ELF_ARCHES)
     flags = lief.ELF.Section.FLAGS
-    sections = tuple(
+    sections = [
         Section(
             name=_text(section.name),
             virtual_address=section.virtual_address,
-            executable=section.has(flags.EXECINSTR),
             writable=section.has(flags.WRITE),
             data=bytes(section.content),
         )
         for section in parsed.sections
-    )
+        if section.has(flags.EXECINSTR)
+    ]
     # A stripped ELF keeps its loadable segments, which is the usual shape of packed ELF.
-    if not any(section.executable for section in sections):
-        sections = sections + tuple(_executable_segments(parsed))
+    if not sections:
+        sections = list(_executable_segments(parsed))
 
     return Binary(
         format="elf",
         arch=arch,
         bits=64 if parsed.header.identity_class == lief.ELF.Header.CLASS.ELF64 else 32,
-        sections=sections,
+        sections=_ordered(sections),
         is_il_only=False,
         has_managed_native=False,
     )
@@ -193,10 +180,13 @@ def _executable_segments(parsed: lief.ELF.Binary) -> Iterator[Section]:
             yield Section(
                 name=f"segment{index}",
                 virtual_address=segment.virtual_address,
-                executable=True,
                 writable=segment.has(flags.W),
                 data=bytes(segment.content),
             )
+
+
+def _ordered(sections: list[Section]) -> tuple[Section, ...]:
+    return tuple(sorted(sections, key=lambda section: section.virtual_address))
 
 
 def _text(value: str | bytes) -> str:

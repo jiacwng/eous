@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from conftest import FIXTURES
-from eous import cli, digest, loader, report, toolchain
+from eous import cli, digest, disasm, loader, toolchain
 
 VECTORS = json.loads((Path(__file__).resolve().parent / "vectors.json").read_text(encoding="utf-8"))
 
@@ -19,7 +19,7 @@ IDS = [entry["name"] for entry in FILES]
 def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> None:
     path = FIXTURES / str(entry["name"])
     binary = loader.load(path)
-    produced = digest.digest(report.disassemble(binary).runs, binary.target)
+    produced = digest.digest(disasm.disassemble(binary.sections, binary.arch).runs, binary.target)
     assert produced == entry["digest"]
 
 
@@ -46,10 +46,10 @@ def test_a_fixture_is_the_file_the_vector_was_taken_from(entry: dict[str, object
 @pytest.mark.parametrize("entry", FILES, ids=IDS)
 def test_the_stages_before_the_digest_stay_put(entry: dict[str, object]) -> None:
     binary = loader.load(FIXTURES / str(entry["name"]))
-    found = report.disassemble(binary)
+    found = disasm.disassemble(binary.sections, binary.arch)
     assert binary.target == entry["target"]
     assert found.total_decoded == entry["decoded"]
-    assert len(found.runs) == entry["runs"]
+    assert sum(len(run) >= digest.NGRAM for run in found.runs) == entry["runs"]
 
 
 # Hand-written runs, so an algorithm change and a rebuilt fixture fail separately.
