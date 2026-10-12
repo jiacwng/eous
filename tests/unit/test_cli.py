@@ -842,7 +842,7 @@ def test_cross_pairs_inside_each_target(tmp_path: Path, output: pytest.CaptureFi
     assert cli.main(["cross", str(known)]) == cli.OK
     captured = output.readouterr()
     assert len([line for line in captured.out.splitlines() if line]) == 2
-    assert "2 pairs scored across elf64, pe64" in captured.err
+    assert "2 pairs scored across pe64, elf64" in captured.err
 
 
 def test_cross_holds_back_anything_below_the_minimum(
