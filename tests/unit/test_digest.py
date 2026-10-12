@@ -92,18 +92,18 @@ def test_the_two_personalisations_differ() -> None:
 
 
 def test_mnemonics_become_roots() -> None:
-    result = digest.normalise((run("mov", "push", "ret"),), "pe64")
+    result = digest.normalise((run("mov", "push", "ret"),))
     assert result == [["mov", "push", "ret"]]
 
 
 def test_an_unknown_mnemonic_becomes_the_oov_token() -> None:
-    result = digest.normalise((run("mov", "wibble", "ret"),), "pe64")
+    result = digest.normalise((run("mov", "wibble", "ret"),))
     assert result == [["mov", digest.OOV, "ret"]]
 
 
 # Removing it would join two instructions that were apart, inventing a sequence.
 def test_the_unknown_token_keeps_its_position() -> None:
-    result = digest.normalise((run("push", "wibble", "pop"),), "pe64")
+    result = digest.normalise((run("push", "wibble", "pop"),))
     assert len(result[0]) == 3
     assert result[0][1] == digest.OOV
 
@@ -315,9 +315,9 @@ def test_a_table_holds_one_row_per_sketch() -> None:
 # Below chance agreement the score is clamped at zero, and the margin still has to come
 # from the slots that agree.
 def test_the_margin_of_error_comes_from_the_slots_and_not_the_score() -> None:
-    zeros = digest.Sketch("EO1", "pe64", 100, 0)
-    ones = digest.Sketch("EO1", "pe64", 100, int("01" * 256, 2))
-    mixed = digest.Sketch("EO1", "pe64", 100, int("00" * 32 + "01" * 224, 2))
+    zeros = digest.Sketch("pe64", 100, 0)
+    ones = digest.Sketch("pe64", 100, int("01" * 256, 2))
+    mixed = digest.Sketch("pe64", 100, int("00" * 32 + "01" * 224, 2))
     assert digest.compare(zeros, ones).uncertainty == 0.0
     assert digest.compare(zeros, mixed).uncertainty == pytest.approx(2.756, abs=0.001)
 
@@ -350,15 +350,6 @@ def test_differing_targets_raise() -> None:
     assert left is not None and right is not None
     with pytest.raises(DigestError, match="different targets"):
         digest.compare(left, right)
-
-
-def test_differing_versions_raise() -> None:
-    text = digest.digest(straight(60), "pe32")
-    assert text is not None
-    original = digest.parse(text)
-    other = digest.Sketch("EO9", original.target, original.cardinality, original.slots)
-    with pytest.raises(DigestError, match="versions differ"):
-        digest.compare(original, other)
 
 
 def test_uncertainty_is_reported_and_bounded() -> None:
@@ -453,5 +444,6 @@ def test_the_margin_of_error_widens_with_the_size_gap() -> None:
 @pytest.mark.parametrize("name", NAMES)
 def test_the_array_path_matches_the_reference_on_every_fixture(name: str) -> None:
     binary = loader.load(FIXTURES / name)
-    grams = digest.shingles(digest.normalise(disasm.disassemble(binary).runs, binary.target))
+    runs = disasm.disassemble(binary.sections, binary.arch).runs
+    grams = digest.shingles(digest.normalise(runs))
     assert digest.pack(grams) == reference_pack(grams)

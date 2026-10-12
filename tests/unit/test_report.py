@@ -118,7 +118,7 @@ def pose(monkeypatch: pytest.MonkeyPatch, binary: loader.Binary) -> None:
 
 
 def with_writable_code(source: loader.Binary) -> loader.Binary:
-    sections = tuple(replace(s, writable=s.writable or s.executable) for s in source.sections)
+    sections = tuple(replace(s, writable=True) for s in source.sections)
     return replace(source, sections=sections)
 
 
@@ -150,8 +150,7 @@ def test_code_too_short_to_shingle_refuses_as_unreadable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = loader.load(PE64)
-    executable = next(s for s in source.sections if s.executable)
-    short = replace(executable, writable=False, data=b"\xc3\xc3")
+    short = replace(source.sections[0], writable=False, data=b"\xc3\xc3")
     pose(monkeypatch, replace(source, sections=(short,)))
 
     result = report.analyse(PE64)
@@ -166,9 +165,7 @@ def test_a_binary_with_no_executable_section_refuses_as_no_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = loader.load(PE64)
-    pose(
-        monkeypatch, replace(source, sections=tuple(s for s in source.sections if not s.executable))
-    )
+    pose(monkeypatch, replace(source, sections=()))
 
     result = report.analyse(PE64)
     assert result.digest is None
@@ -177,15 +174,81 @@ def test_a_binary_with_no_executable_section_refuses_as_no_code(
     assert result.refusal.detail == "no executable section"
 
 
+NOISE = random.Random(20261012).randbytes(8192)
+CODE = b"\x31\xc0\x50" * 4 + b"\xc3"
+
+
+def with_code(monkeypatch: pytest.MonkeyPatch, *blobs: bytes) -> report.Analysis:
+    source = loader.load(PE64)
+    sections = tuple(
+        loader.Section(f".s{index}", 0x1000 * (index + 1), False, blob)
+        for index, blob in enumerate(blobs)
+    )
+    pose(monkeypatch, replace(source, sections=sections))
+    return report.analyse(PE64)
+
+
+def test_a_compressed_section_alone_refuses_as_fully_packed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = with_code(monkeypatch, NOISE)
+    assert result.refusal == report.Refusal(report.PACKED, "100% of executable code is compressed")
+
+
+# 128 equally frequent bytes carry exactly log2(128) = 7.0 bits, which is the threshold, so
+# these two pin that the comparison includes its boundary.
+def test_a_section_exactly_at_the_threshold_counts_as_compressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    edge = bytes(range(128)) * 64
+    assert loader.data_entropy(edge) == report.ENTROPY_THRESHOLD
+    assert with_code(monkeypatch, edge).refusal.reason == report.PACKED
+
+
+def test_a_section_just_under_the_threshold_is_disassembled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    edge = bytes(range(127)) * 64
+    assert loader.data_entropy(edge) < report.ENTROPY_THRESHOLD
+    assert with_code(monkeypatch, edge).digest is not None
+
+
+def test_a_substantial_readable_section_keeps_the_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert with_code(monkeypatch, NOISE, CODE * 2048).digest is not None
+
+
+# A section holds at most log2(size) bits of entropy, so a tiny readable section can sit
+# beside a compressed one without meaning the binary is readable.
+def test_a_tiny_readable_section_leaves_the_binary_packed(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = with_code(monkeypatch, NOISE, CODE)
+    assert result.refusal == report.Refusal(report.PACKED, "100% of executable code is compressed")
+
+
+def test_half_the_code_compressed_refuses_as_packed(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = with_code(monkeypatch, NOISE[:4096], CODE * 315 + b"\xc3")
+    assert result.refusal == report.Refusal(report.PACKED, "50% of executable code is compressed")
+
+
+def test_an_empty_section_is_not_packed(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = with_code(monkeypatch, b"")
+    assert result.refusal == report.Refusal(report.UNREADABLE, "too little readable code")
+
+
+def test_a_packed_binary_disassembles_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unreachable(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the disassembler ran")
+
+    monkeypatch.setattr(report.disasm, "disassemble", unreachable)
+    assert with_code(monkeypatch, NOISE).refusal.reason == report.PACKED
+
+
 def managed(
     monkeypatch: pytest.MonkeyPatch, *, il_only: bool, native: bool, entropy_bytes: bytes = b""
 ) -> None:
     source = loader.load(PE64)
     sections = source.sections
     if entropy_bytes:
-        sections = tuple(
-            replace(s, data=entropy_bytes if s.executable else s.data) for s in sections
-        )
+        sections = tuple(replace(s, data=entropy_bytes) for s in sections)
     pose(
         monkeypatch,
         replace(source, sections=sections, is_il_only=il_only, has_managed_native=native),
@@ -258,12 +321,11 @@ def test_format_is_judged_before_architecture(tmp_path: Path) -> None:
 
 def test_every_result_is_frozen() -> None:
     binary = loader.load(ELF64)
-    found = disasm.disassemble(binary)
+    found = disasm.disassemble(binary.sections, binary.arch)
     results = [
         (binary, "arch"),
         (binary.sections[0], "name"),
         (found, "total_decoded"),
-        (found.reports[0], "decoded"),
         (report.analyse(ELF64), "digest"),
         (report.Refusal(report.UNREADABLE, "gone"), "reason"),
     ]

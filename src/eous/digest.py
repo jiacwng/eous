@@ -130,14 +130,13 @@ def _minima(hashes: numpy.ndarray) -> numpy.ndarray:
 
 @dataclass(frozen=True)
 class Sketch:
-    version: str
     target: str
     cardinality: int
     slots: int
 
     def render(self) -> str:
         body = self.slots.to_bytes(SKETCH_BYTES, "big").hex()
-        return f"{self.version}:{self.target}:{self.cardinality}:{body}"
+        return f"{VERSION}:{self.target}:{self.cardinality}:{body}"
 
 
 @dataclass(frozen=True)
@@ -155,8 +154,7 @@ def _check_target(target: str) -> None:
         raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
 
 
-def normalise(runs: tuple[tuple[str, ...], ...], target: str) -> list[list[str]]:
-    _check_target(target)
+def normalise(runs: tuple[tuple[str, ...], ...]) -> list[list[str]]:
     roots = load_vocab()
     return [[roots.get(mnemonic, OOV) for mnemonic in run] for run in runs]
 
@@ -187,11 +185,12 @@ def pack(grams: set[tuple[str, ...]]) -> int:
 
 
 def digest(runs: tuple[tuple[str, ...], ...], target: str) -> str | None:
-    grams = shingles(normalise(runs, target))
+    _check_target(target)
+    grams = shingles(normalise(runs))
     if not grams:
         return None
 
-    return Sketch(VERSION, target, len(grams), pack(grams)).render()
+    return Sketch(target, len(grams), pack(grams)).render()
 
 
 def parse(text: str) -> Sketch:
@@ -210,7 +209,7 @@ def parse(text: str) -> Sketch:
     if not SKETCH_PATTERN.match(body):
         raise DigestError(f"sketch is {SKETCH_HEX} lower-case hex characters")
 
-    return Sketch(version, target, int(cardinality), int(body, 16))
+    return Sketch(target, int(cardinality), int(body, 16))
 
 
 def unpack(sketch: Sketch) -> numpy.ndarray:
@@ -238,8 +237,6 @@ def compare(left: Sketch | str, right: Sketch | str) -> Scores:
     first = parse(left) if isinstance(left, str) else left
     second = parse(right) if isinstance(right, str) else right
 
-    if first.version != second.version:
-        raise DigestError(f"versions differ: {first.version} and {second.version}")
     if first.target != second.target:
         raise DigestError(f"different targets: {first.target} and {second.target}")
 

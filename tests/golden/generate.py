@@ -12,7 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from eous import digest, loader, report, toolchain
+from eous import digest, disasm, loader, toolchain
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures" / "bin"
@@ -32,14 +32,14 @@ def build() -> dict[str, object]:
     for path in sorted(FIXTURES.iterdir()):
         raw = path.read_bytes()
         binary = loader.load(path)
-        found = report.disassemble(binary)
+        found = disasm.disassemble(binary.sections, binary.arch)
         files.append(
             {
                 "name": path.name,
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 "target": binary.target,
                 "decoded": found.total_decoded,
-                "runs": len(found.runs),
+                "runs": sum(len(run) >= digest.NGRAM for run in found.runs),
                 "digest": digest.digest(found.runs, binary.target),
             }
         )
