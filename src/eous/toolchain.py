@@ -1,3 +1,5 @@
+# The versions of the decoder and the parser a digest depends on.
+
 from __future__ import annotations
 
 from importlib.metadata import version
