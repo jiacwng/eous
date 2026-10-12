@@ -70,8 +70,9 @@ reading a comparison:
   not separable.
 
   Containment runs both ways, and the gap between them says which side is the
-  superset. It comes from the same estimate, so its margin is wider, and it
-  grows with the size difference. Above 4x both figures are withheld.
+  superset. It comes from the same estimate, scaled by each file's size, so the
+  smaller file's figure carries the wider margin, and it grows with the size
+  difference. Above 4x both figures are withheld.
 
 a refusal names its cause:
   eous: sample.macho:  unsupported_format: macho
