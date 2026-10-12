@@ -278,10 +278,10 @@ def test_a_closed_reader_exits_zero_in_a_real_process(args: list[str]) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    assert process.stdout is not None
+    assert process.stdout is not None and process.stderr is not None
     process.stdout.close()
-    _, err = process.communicate(timeout=120)
-    assert process.returncode == cli.OK
+    err = process.stderr.read()
+    assert process.wait(timeout=120) == cli.OK
     assert err == b""
 
 

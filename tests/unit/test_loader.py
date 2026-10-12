@@ -145,7 +145,7 @@ def test_a_binary_keeping_its_sections_ignores_the_segment_fallback() -> None:
 def test_a_parser_failure_becomes_a_loader_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def explode(_: str) -> object:
+    def explode(_: bytes) -> object:
         raise RuntimeError("parser gave up")
 
     target = tmp_path / "anything.bin"
@@ -153,6 +153,25 @@ def test_a_parser_failure_becomes_a_loader_error(
     monkeypatch.setattr(loader.lief, "parse", explode)
     with pytest.raises(LoaderError, match="parser gave up"):
         loader.load(target)
+
+
+def test_a_file_that_cannot_be_read_becomes_a_loader_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(_: Path) -> bytes:
+        raise PermissionError(13, "Permission denied")
+
+    target = tmp_path / "locked.bin"
+    target.write_bytes(PE64.read_bytes())
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+    with pytest.raises(LoaderError, match="cannot read: Permission denied"):
+        loader.load(target)
+
+
+def test_a_name_outside_ascii_loads(tmp_path: Path) -> None:
+    target = tmp_path / "café 程序.exe"
+    target.write_bytes(PE64.read_bytes())
+    assert loader.load(target).target == "pe64"
 
 
 def test_an_unrecognised_container_becomes_a_loader_error(
