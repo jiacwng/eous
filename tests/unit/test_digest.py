@@ -1,5 +1,6 @@
 import random
 
+import numpy
 import pytest
 
 from conftest import FIXTURES, NAMES
@@ -328,13 +329,13 @@ def test_the_margin_of_error_comes_from_the_slots_and_not_the_score() -> None:
     zeros = digest.Sketch("pe64", 100, 0)
     ones = digest.Sketch("pe64", 100, int("01" * 256, 2))
     mixed = digest.Sketch("pe64", 100, int("00" * 32 + "01" * 224, 2))
-    assert digest.compare(zeros, ones).uncertainty == 0.0
-    assert digest.compare(zeros, mixed).uncertainty == pytest.approx(2.756, abs=0.001)
+    assert digest.compare(zeros, ones).uncertainty == pytest.approx(0.519, abs=0.001)
+    assert digest.compare(zeros, mixed).uncertainty == pytest.approx(2.952, abs=0.001)
 
     scored, spread = digest.score(digest.unpack_all([ones, mixed]), digest.unpack(zeros))
     assert list(scored) == [0.0, 0.0]
-    assert float(spread[0]) == 0.0
-    assert float(spread[1]) == pytest.approx(2.756, abs=0.001)
+    assert float(spread[0]) == pytest.approx(0.519, abs=0.001)
+    assert float(spread[1]) == pytest.approx(2.952, abs=0.001)
 
 
 def test_the_batch_path_equals_compare_on_every_pair() -> None:
@@ -370,10 +371,19 @@ def test_uncertainty_is_reported_and_bounded() -> None:
     assert 0.0 <= scores.uncertainty < 20.0
 
 
-def test_identical_sketches_carry_zero_uncertainty() -> None:
+# 256 agreeing slots bound the shared share from below, so full agreement still has a margin.
+def test_identical_sketches_keep_a_margin() -> None:
     text = digest.digest(straight(60), "pe64")
     assert text is not None
-    assert digest.compare(text, text).uncertainty == pytest.approx(0.0)
+    scores = digest.compare(text, text)
+    assert scores.similarity == 100.0
+    assert scores.uncertainty == pytest.approx(0.519, abs=0.001)
+
+
+def test_the_margin_matches_the_textbook_one_in_the_middle() -> None:
+    half = numpy.array([0.5])
+    wald = numpy.sqrt(0.25 / digest.PERMUTATIONS)
+    assert float(digest._wilson_margin(half)[0]) == pytest.approx(wald, rel=0.01)
 
 
 def test_containment_is_reported_both_ways_at_similar_sizes() -> None:

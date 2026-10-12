@@ -229,8 +229,15 @@ def score(rows: numpy.ndarray, one: numpy.ndarray) -> tuple[numpy.ndarray, numpy
     # Two unrelated sets already agree on one slot in four, so chance agreement comes off.
     agreed = numpy.count_nonzero(rows == one, axis=1) / PERMUTATIONS
     similarity = numpy.maximum(0.0, (agreed - FLOOR) / (1 - FLOOR)) * 100
-    uncertainty = numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS) / (1 - FLOOR) * 100
-    return similarity, uncertainty
+    return similarity, _wilson_margin(agreed) / (1 - FLOOR) * 100
+
+
+def _wilson_margin(agreed: numpy.ndarray) -> numpy.ndarray:
+    shrink = 1 + 1 / PERMUTATIONS
+    centre = (agreed + 1 / (2 * PERMUTATIONS)) / shrink
+    half = numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS + 1 / (4 * PERMUTATIONS**2)) / shrink
+    margin: numpy.ndarray = numpy.maximum(agreed - (centre - half), centre + half - agreed)
+    return margin
 
 
 def compare(left: Sketch | str, right: Sketch | str) -> Scores:

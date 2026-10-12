@@ -693,7 +693,7 @@ def test_match_json_carries_the_target_and_the_ranking(
     payload = json.loads(output.readouterr().out)
     assert payload["target"] == "pe64"
     assert payload["skipped_other_target"] == 1
-    assert payload["matches"][0]["uncertainty"] == pytest.approx(0.0)
+    assert payload["matches"][0]["uncertainty"] == pytest.approx(0.519, abs=0.001)
     assert payload["matches"][0]["similarity"] == pytest.approx(100.0)
 
 
