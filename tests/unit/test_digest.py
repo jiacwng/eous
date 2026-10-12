@@ -21,8 +21,8 @@ def run(*mnemonics: str) -> tuple[str, ...]:
     return tuple(mnemonics)
 
 
-def straight(length: int, mnemonic: str = "mov") -> tuple[tuple[str, ...], ...]:
-    return (tuple(([mnemonic, "push"] * length)[:length]),)
+def straight(length: int) -> tuple[tuple[str, ...], ...]:
+    return (tuple((["mov", "push"] * length)[:length]),)
 
 
 def varied(length: int, seed: int) -> list[str]:
@@ -218,7 +218,6 @@ def test_the_largest_representable_cardinality_parses() -> None:
     )
 
 
-# Filler between functions is one instruction repeated, and every such file would match.
 def test_code_of_one_repeated_root_yields_no_digest() -> None:
     assert digest.digest((run(*(["nop"] * 40)),), "pe64") is None
 

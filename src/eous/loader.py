@@ -204,8 +204,6 @@ def _arch(read: Callable[[], object], arches: dict[str, str]) -> str:
         value = read()
     name = getattr(value, "name", None)
     machine = name if isinstance(name, str) else str(value)
-    if machine == "NONE":
-        raise LoaderError("no machine named")
     arch = arches.get(machine)
     if arch is None:
         raise UnsupportedArchError(machine)
