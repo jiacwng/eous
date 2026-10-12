@@ -61,9 +61,9 @@ examples:
   eous cross digests.txt --min 40
 
 reading a comparison:
-  similarity:  27.6% +/- 8.0 (19.6% to 35.6%)
-  containment: old.exe in new.exe   94.1% +/- 12
-               new.exe in old.exe   41.2% +/- 5
+  similarity:  36.5% +/- 4.2 (32.3% to 40.6%)
+  containment: old.exe in new.exe   96.0% +/- 8
+               new.exe in old.exe   37.0% +/- 3
 
   The +/- figure is the margin of error, since 256 slots estimate the overlap.
   It narrows as scores approach 100%. Two results whose ranges overlap are
@@ -74,11 +74,12 @@ reading a comparison:
   grows with the size difference. Above 4x both figures are withheld.
 
 a refusal names its cause:
-  eous: sample.macho: unsupported_format: macho
-  eous: sample.elf:   unsupported_arch: AARCH64
-  eous: packed.exe:   packed: 100% of executable code is compressed
-  eous: library.dll:  managed: il only, no native code
-  eous: notes.txt:    unreadable: no recognised container
+  eous: sample.macho:  unsupported_format: macho
+  eous: sample.elf:    unsupported_arch: AARCH64
+  eous: packed.exe:    packed: 100% of executable code is compressed
+  eous: library.dll:   managed: il only, no native code
+  eous: resources.dll: no_code: no executable section
+  eous: notes.txt:     unreadable: no recognised container
 
 every file eous declines to digest is reported with its cause. A digest is
 withheld whenever the code inside stays unreadable."""
