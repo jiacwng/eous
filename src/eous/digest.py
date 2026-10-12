@@ -187,7 +187,7 @@ def pack(grams: set[tuple[str, ...]]) -> int:
 def digest(runs: tuple[tuple[str, ...], ...], target: str) -> str | None:
     _check_target(target)
     grams = shingles(normalise(runs))
-    if not grams:
+    if len({root for gram in grams for root in gram}) < 2:
         return None
 
     return Sketch(target, len(grams), pack(grams)).render()
@@ -204,8 +204,8 @@ def parse(text: str) -> Sketch:
     _check_target(target)
     if not (cardinality.isascii() and cardinality.isdigit()):
         raise DigestError(f"cardinality {cardinality!r} is a non-negative integer")
-    if int(cardinality) > MAX_CARDINALITY:
-        raise DigestError(f"cardinality {cardinality!r} exceeds {MAX_CARDINALITY}")
+    if len(cardinality) > len(str(MAX_CARDINALITY)) or int(cardinality) > MAX_CARDINALITY:
+        raise DigestError(f"cardinality exceeds {MAX_CARDINALITY}")
     if not SKETCH_PATTERN.match(body):
         raise DigestError(f"sketch is {SKETCH_HEX} lower-case hex characters")
 
