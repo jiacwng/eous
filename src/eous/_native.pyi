@@ -1,0 +1,3 @@
+ICED_X86: str
+
+def digest(sections: list[bytes], bitness: int, target: str) -> str | None: ...

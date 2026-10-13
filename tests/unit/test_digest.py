@@ -2,8 +2,9 @@ import random
 
 import pytest
 
+import reference
 from conftest import FIXTURES, NAMES
-from eous import digest, disasm, loader
+from eous import digest, loader
 from eous.digest import DigestError
 
 # Real mnemonics, since invented names resolve to the unknown token.
@@ -36,23 +37,24 @@ def sketch_of(text: str) -> digest.Sketch:
 
 def grams_of(count: int) -> set[tuple[str, ...]]:
     return {
-        tuple(f"t{index}p{position}" for position in range(digest.NGRAM)) for index in range(count)
+        tuple(f"t{index}p{position}" for position in range(reference.NGRAM))
+        for index in range(count)
     }
 
 
 def reference_pack(grams: set[tuple[str, ...]]) -> int:
     # The plain statement of the sketch, kept as the oracle the array path answers to.
     hashes = [
-        digest.h64(
-            digest.SEPARATOR.join(token.encode("utf-8") for token in gram),
-            digest.SHINGLE_PERSON,
+        reference.h64(
+            reference.SEPARATOR.join(token.encode("utf-8") for token in gram),
+            reference.SHINGLE_PERSON,
         )
         for gram in grams
     ]
 
     accumulated = 0
-    for multiplier, offset in digest.COEFFICIENTS:
-        smallest = min((multiplier * value + offset) % digest.MODULUS for value in hashes)
+    for multiplier, offset in reference.COEFFICIENTS:
+        smallest = min((multiplier * value + offset) % reference.MODULUS for value in hashes)
         accumulated = (accumulated << digest.SLOT_BITS) | (smallest & digest.MASK)
     return accumulated
 
@@ -63,115 +65,115 @@ def test_the_sketch_is_512_bits() -> None:
 
 
 def test_the_modulus_is_the_mersenne_prime() -> None:
-    assert digest.MODULUS == 2**61 - 1
+    assert reference.MODULUS == 2**61 - 1
 
 
 def test_every_permutation_multiplier_is_non_zero() -> None:
     # A zero multiplier maps every input to the offset and destroys the permutation.
-    assert all(a > 0 for a, _ in digest.COEFFICIENTS)
+    assert all(a > 0 for a, _ in reference.COEFFICIENTS)
 
 
 def test_permutations_stay_inside_the_modulus() -> None:
-    assert all(a < digest.MODULUS and b < digest.MODULUS for a, b in digest.COEFFICIENTS)
+    assert all(a < reference.MODULUS and b < reference.MODULUS for a, b in reference.COEFFICIENTS)
 
 
 def test_permutations_are_distinct() -> None:
-    assert len(set(digest.COEFFICIENTS)) == digest.PERMUTATIONS
+    assert len(set(reference.COEFFICIENTS)) == digest.PERMUTATIONS
 
 
 def test_permutations_follow_their_stated_derivation() -> None:
     # Recomputing one pair from the rule proves the table came from the rule.
     label = (7).to_bytes(4, "big")
-    expected_a = digest.h64(b"a" + label, b"eous-prm") % (digest.MODULUS - 1) + 1
-    expected_b = digest.h64(b"b" + label, b"eous-prm") % digest.MODULUS
-    assert digest.COEFFICIENTS[7] == (expected_a, expected_b)
+    expected_a = reference.h64(b"a" + label, b"eous-prm") % (reference.MODULUS - 1) + 1
+    expected_b = reference.h64(b"b" + label, b"eous-prm") % reference.MODULUS
+    assert reference.COEFFICIENTS[7] == (expected_a, expected_b)
 
 
 def test_the_two_personalisations_differ() -> None:
-    assert digest.h64(b"x", b"eous-ng") != digest.h64(b"x", b"eous-prm")
+    assert reference.h64(b"x", b"eous-ng") != reference.h64(b"x", b"eous-prm")
 
 
 def test_mnemonics_become_roots() -> None:
-    result = digest.normalise((run("mov", "push", "ret"),))
+    result = reference.normalise((run("mov", "push", "ret"),))
     assert result == [["mov", "push", "ret"]]
 
 
 def test_an_unknown_mnemonic_becomes_the_oov_token() -> None:
-    result = digest.normalise((run("mov", "wibble", "ret"),))
-    assert result == [["mov", digest.OOV, "ret"]]
+    result = reference.normalise((run("mov", "wibble", "ret"),))
+    assert result == [["mov", reference.OOV, "ret"]]
 
 
 # Removing it would join two instructions that were apart, inventing a sequence.
 def test_the_unknown_token_keeps_its_position() -> None:
-    result = digest.normalise((run("push", "wibble", "pop"),))
+    result = reference.normalise((run("push", "wibble", "pop"),))
     assert len(result[0]) == 3
-    assert result[0][1] == digest.OOV
+    assert result[0][1] == reference.OOV
 
 
 def test_a_run_shorter_than_the_window_yields_nothing() -> None:
-    assert digest.shingles([["mov"] * (digest.NGRAM - 1)]) == set()
+    assert reference.shingles([["mov"] * (reference.NGRAM - 1)]) == set()
 
 
 def test_a_run_exactly_the_window_yields_one() -> None:
-    assert len(digest.shingles([["mov"] * digest.NGRAM])) == 1
+    assert len(reference.shingles([["mov"] * reference.NGRAM])) == 1
 
 
 def test_windows_slide_by_one() -> None:
-    tokens = [f"op{i}" for i in range(digest.NGRAM + 3)]
-    assert len(digest.shingles([tokens])) == 4
+    tokens = [f"op{i}" for i in range(reference.NGRAM + 3)]
+    assert len(reference.shingles([tokens])) == 4
 
 
 def test_windows_stay_inside_one_run() -> None:
-    half = digest.NGRAM // 2 + 1
+    half = reference.NGRAM // 2 + 1
     left = [f"a{i}" for i in range(half)]
     right = [f"b{i}" for i in range(half)]
-    assert digest.shingles([left, right]) == set()
+    assert reference.shingles([left, right]) == set()
 
 
 def test_duplicate_windows_collapse() -> None:
     # A set is what lets the digest survive loop unrolling.
-    once = digest.shingles([["mov"] * digest.NGRAM])
-    many = digest.shingles([["mov"] * (digest.NGRAM * 8)])
+    once = reference.shingles([["mov"] * reference.NGRAM])
+    many = reference.shingles([["mov"] * (reference.NGRAM * 8)])
     assert once == many
 
 
 def test_one_unknown_token_is_tolerated() -> None:
-    tokens = ["mov"] * (digest.NGRAM - 1) + [digest.OOV]
-    assert len(digest.shingles([tokens])) == 1
+    tokens = ["mov"] * (reference.NGRAM - 1) + [reference.OOV]
+    assert len(reference.shingles([tokens])) == 1
 
 
 def test_the_packed_value_fits_the_sketch() -> None:
-    packed = digest.pack(digest.shingles([["mov"] * 40]))
+    packed = reference.pack(reference.shingles([["mov"] * 40]))
     assert 0 <= packed < 1 << (digest.PERMUTATIONS * digest.SLOT_BITS)
 
 
 def test_set_order_leaves_the_sketch_unchanged() -> None:
-    grams = digest.shingles([[f"op{i}" for i in range(60)]])
-    assert digest.pack(grams) == digest.pack(set(reversed(list(grams))))
+    grams = reference.shingles([[f"op{i}" for i in range(60)]])
+    assert reference.pack(grams) == reference.pack(set(reversed(list(grams))))
 
 
 def test_the_array_path_matches_the_reference_on_a_small_set() -> None:
-    grams = digest.shingles([varied(60, 7)])
-    assert digest.pack(grams) == reference_pack(grams)
+    grams = reference.shingles([varied(60, 7)])
+    assert reference.pack(grams) == reference_pack(grams)
 
 
 def test_the_array_path_matches_the_reference_on_a_single_shingle() -> None:
-    grams = {("mov",) * digest.NGRAM}
-    assert digest.pack(grams) == reference_pack(grams)
+    grams = {("mov",) * reference.NGRAM}
+    assert reference.pack(grams) == reference_pack(grams)
 
 
 def test_the_array_path_matches_the_reference_across_a_block_boundary() -> None:
-    grams = grams_of(digest.BLOCK + 200)
-    assert digest.pack(grams) == reference_pack(grams)
+    grams = grams_of(reference.BLOCK + 200)
+    assert reference.pack(grams) == reference_pack(grams)
 
 
 def test_an_empty_shingle_set_names_its_cause() -> None:
     with pytest.raises(DigestError):
-        digest.pack(set())
+        reference.pack(set())
 
 
 def test_a_digest_carries_four_fields() -> None:
-    text = digest.digest(straight(40), "pe64")
+    text = reference.digest(straight(40), "pe64")
     assert text is not None
     assert text.split(":")[0] == "EO1"
     assert text.split(":")[1] == "pe64"
@@ -179,22 +181,22 @@ def test_a_digest_carries_four_fields() -> None:
 
 
 def test_cardinality_counts_distinct_shingles() -> None:
-    tokens = varied(digest.NGRAM + 2, seed=1)
-    text = digest.digest((tuple(tokens),), "pe32")
+    tokens = varied(reference.NGRAM + 2, seed=1)
+    text = reference.digest((tuple(tokens),), "pe32")
     assert text is not None
-    assert int(text.split(":")[2]) == len(digest.shingles([tokens]))
+    assert int(text.split(":")[2]) == len(reference.shingles([tokens]))
 
 
 # Every window here holds only the unknown token, so the digest describes nothing and two
 # such files score 100% against each other. No window in 4,310,529 taken from real binaries
 # is entirely unknown.
 def test_wholly_unrecognisable_code_yields_no_digest() -> None:
-    assert digest.digest((tuple(f"wibble{i}" for i in range(400)),), "pe64") is None
+    assert reference.digest((tuple(f"wibble{i}" for i in range(400)),), "pe64") is None
 
 
 # `'²'.isdigit()` is true and `int('²')` raises, so the cardinality is read as ASCII digits.
 def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
-    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
+    text = reference.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="non-negative integer"):
@@ -202,7 +204,7 @@ def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
 
 
 def test_a_cardinality_beyond_float_precision_is_refused() -> None:
-    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
+    text = reference.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="exceeds"):
@@ -210,7 +212,7 @@ def test_a_cardinality_beyond_float_precision_is_refused() -> None:
 
 
 def test_a_cardinality_past_the_integer_conversion_limit_is_refused() -> None:
-    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
+    text = reference.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     with pytest.raises(DigestError, match="exceeds"):
@@ -218,7 +220,7 @@ def test_a_cardinality_past_the_integer_conversion_limit_is_refused() -> None:
 
 
 def test_the_largest_representable_cardinality_parses() -> None:
-    text = digest.digest((run(*(["mov", "push"] * 20)),), "pe64")
+    text = reference.digest((run(*(["mov", "push"] * 20)),), "pe64")
     assert text is not None
     body = text.rsplit(":", 1)[1]
     assert digest.parse(f"EO1:pe64:{digest.MAX_CARDINALITY}:{body}").cardinality == (
@@ -227,26 +229,26 @@ def test_the_largest_representable_cardinality_parses() -> None:
 
 
 def test_code_of_one_repeated_root_yields_no_digest() -> None:
-    assert digest.digest((run(*(["nop"] * 40)),), "pe64") is None
+    assert reference.digest((run(*(["nop"] * 40)),), "pe64") is None
 
 
 def test_too_little_code_yields_no_digest() -> None:
-    assert digest.digest((run("mov", "ret"),), "pe64") is None
+    assert reference.digest((run("mov", "ret"),), "pe64") is None
 
 
 def test_no_disassembled_instructions_yield_no_digest() -> None:
-    assert digest.digest((), "pe64") is None
+    assert reference.digest((), "pe64") is None
 
 
 def test_an_unsupported_target_raises() -> None:
     with pytest.raises(DigestError, match="mips"):
-        digest.digest(straight(40), "mips")
+        reference.digest(straight(40), "mips")
 
 
 def test_a_digest_round_trips() -> None:
-    text = digest.digest(straight(40), "pe64")
+    text = reference.digest(straight(40), "pe64")
     assert text is not None
-    assert digest.parse(text).render() == text
+    assert reference.render(digest.parse(text)) == text
 
 
 @pytest.mark.parametrize(
@@ -267,29 +269,29 @@ def test_a_malformed_digest_raises(text: str, complaint: str) -> None:
 
 
 def test_a_digest_matches_itself_completely() -> None:
-    text = digest.digest(straight(60), "pe64")
+    text = reference.digest(straight(60), "pe64")
     assert text is not None
     assert digest.compare(text, text).similarity == pytest.approx(100.0)
 
 
 def test_unrelated_inputs_score_near_zero() -> None:
-    left = digest.digest((tuple(varied(600, seed=11)),), "pe64")
-    right = digest.digest((tuple(varied(600, seed=22)),), "pe64")
+    left = reference.digest((tuple(varied(600, seed=11)),), "pe64")
+    right = reference.digest((tuple(varied(600, seed=22)),), "pe64")
     assert left is not None and right is not None
     assert digest.compare(left, right).similarity < 25.0
 
 
 def test_overlapping_inputs_score_between() -> None:
     shared = varied(400, seed=33)
-    left = digest.digest((tuple(shared + varied(400, seed=44)),), "pe64")
-    right = digest.digest((tuple(shared + varied(400, seed=55)),), "pe64")
+    left = reference.digest((tuple(shared + varied(400, seed=44)),), "pe64")
+    right = reference.digest((tuple(shared + varied(400, seed=55)),), "pe64")
     assert left is not None and right is not None
     score = digest.compare(left, right).similarity
     assert 10.0 < score < 95.0
 
 
 def test_comparison_accepts_parsed_sketches() -> None:
-    text = digest.digest(straight(60), "pe32")
+    text = reference.digest(straight(60), "pe32")
     assert text is not None
     assert digest.compare(sketch_of(text), sketch_of(text)).similarity == pytest.approx(100.0)
 
@@ -297,7 +299,7 @@ def test_comparison_accepts_parsed_sketches() -> None:
 def group_of(count: int) -> list[digest.Sketch]:
     built = []
     for seed in range(count):
-        text = digest.digest((tuple(varied(300, seed=seed)),), "pe64")
+        text = reference.digest((tuple(varied(300, seed=seed)),), "pe64")
         assert text is not None
         built.append(sketch_of(text))
     return built
@@ -308,7 +310,7 @@ def test_unpacking_recovers_every_slot() -> None:
     slots = digest.unpack(sketch)
     assert len(slots) == digest.PERMUTATIONS
     # Read the bits back off the printed digest, so the check uses the published format.
-    body = int(sketch.render().rsplit(":", 1)[-1], 16)
+    body = int(reference.render(sketch).rsplit(":", 1)[-1], 16)
     assert [int(value) for value in slots] == [
         (body >> (digest.PERMUTATIONS - 1 - index) * digest.SLOT_BITS) & digest.MASK
         for index in range(digest.PERMUTATIONS)
@@ -355,23 +357,23 @@ def test_a_sketch_scores_full_against_itself_in_a_batch() -> None:
 
 
 def test_differing_targets_raise() -> None:
-    left = digest.digest(straight(60), "pe32")
-    right = digest.digest(straight(60), "pe64")
+    left = reference.digest(straight(60), "pe32")
+    right = reference.digest(straight(60), "pe64")
     assert left is not None and right is not None
     with pytest.raises(DigestError, match="different targets"):
         digest.compare(left, right)
 
 
 def test_uncertainty_is_reported_and_bounded() -> None:
-    left = digest.digest((tuple(varied(600, seed=66)),), "pe64")
-    right = digest.digest((tuple(varied(600, seed=77)),), "pe64")
+    left = reference.digest((tuple(varied(600, seed=66)),), "pe64")
+    right = reference.digest((tuple(varied(600, seed=77)),), "pe64")
     assert left is not None and right is not None
     scores = digest.compare(left, right)
     assert 0.0 <= scores.uncertainty < 20.0
 
 
 def test_identical_sketches_keep_a_margin() -> None:
-    text = digest.digest(straight(60), "pe64")
+    text = reference.digest(straight(60), "pe64")
     assert text is not None
     scores = digest.compare(text, text)
     assert scores.similarity == 100.0
@@ -385,7 +387,7 @@ def test_half_the_slots_agreeing_keeps_the_usual_margin() -> None:
 
 
 def test_containment_is_reported_both_ways_at_similar_sizes() -> None:
-    text = digest.digest((tuple(varied(400, seed=88)),), "pe64")
+    text = reference.digest((tuple(varied(400, seed=88)),), "pe64")
     assert text is not None
     scores = digest.compare(text, text)
     assert scores.left_in_right == pytest.approx(100.0)
@@ -393,8 +395,8 @@ def test_containment_is_reported_both_ways_at_similar_sizes() -> None:
 
 
 def test_containment_is_withheld_in_both_directions_beyond_the_ratio() -> None:
-    small = digest.digest((tuple(varied(30, seed=99)),), "pe64")
-    large = digest.digest((tuple(varied(3000, seed=99)),), "pe64")
+    small = reference.digest((tuple(varied(30, seed=99)),), "pe64")
+    large = reference.digest((tuple(varied(3000, seed=99)),), "pe64")
     assert small is not None and large is not None
     scores = digest.compare(small, large)
     assert scores.left_in_right is None
@@ -404,8 +406,8 @@ def test_containment_is_withheld_in_both_directions_beyond_the_ratio() -> None:
 # The gap between the two directions is the useful part: it names the superset.
 def test_a_subset_shows_the_asymmetry() -> None:
     tokens = varied(900, seed=41)
-    whole = digest.digest((tuple(tokens),), "pe64")
-    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "pe64")
+    whole = reference.digest((tuple(tokens),), "pe64")
+    part = reference.digest((tuple(tokens[: len(tokens) // 2]),), "pe64")
     assert whole is not None and part is not None
 
     scores = digest.compare(part, whole)
@@ -415,8 +417,8 @@ def test_a_subset_shows_the_asymmetry() -> None:
 
 def test_the_directions_swap_with_the_arguments() -> None:
     tokens = varied(900, seed=42)
-    whole = digest.digest((tuple(tokens),), "pe64")
-    part = digest.digest((tuple(tokens[: len(tokens) // 2]),), "pe64")
+    whole = reference.digest((tuple(tokens),), "pe64")
+    part = reference.digest((tuple(tokens[: len(tokens) // 2]),), "pe64")
     assert whole is not None and part is not None
 
     forward = digest.compare(part, whole)
@@ -427,7 +429,7 @@ def test_the_directions_swap_with_the_arguments() -> None:
 
 
 def test_containment_carries_a_margin_of_error_whenever_it_is_reported() -> None:
-    text = digest.digest((tuple(varied(400, seed=88)),), "pe64")
+    text = reference.digest((tuple(varied(400, seed=88)),), "pe64")
     assert text is not None
     scores = digest.compare(text, text)
     assert scores.left_in_right_uncertainty is not None
@@ -435,8 +437,8 @@ def test_containment_carries_a_margin_of_error_whenever_it_is_reported() -> None
 
 
 def test_a_withheld_containment_carries_no_margin_of_error() -> None:
-    small = digest.digest((tuple(varied(30, seed=99)),), "pe64")
-    large = digest.digest((tuple(varied(3000, seed=99)),), "pe64")
+    small = reference.digest((tuple(varied(30, seed=99)),), "pe64")
+    large = reference.digest((tuple(varied(3000, seed=99)),), "pe64")
     assert small is not None and large is not None
     scores = digest.compare(small, large)
     assert scores.left_in_right_uncertainty is None
@@ -447,9 +449,9 @@ def test_a_withheld_containment_carries_no_margin_of_error() -> None:
 # and 24 at a 4x gap, so the margin the reader sees has to widen the same way.
 def test_the_margin_of_error_widens_with_the_size_gap() -> None:
     tokens = varied(1200, seed=77)
-    whole = digest.digest((tuple(tokens),), "pe64")
-    near = digest.digest((tuple(tokens[: int(len(tokens) * 0.9)]),), "pe64")
-    far = digest.digest((tuple(tokens[: len(tokens) // 3]),), "pe64")
+    whole = reference.digest((tuple(tokens),), "pe64")
+    near = reference.digest((tuple(tokens[: int(len(tokens) * 0.9)]),), "pe64")
+    far = reference.digest((tuple(tokens[: len(tokens) // 3]),), "pe64")
     assert whole is not None and near is not None and far is not None
 
     close = digest.compare(near, whole)
@@ -462,6 +464,6 @@ def test_the_margin_of_error_widens_with_the_size_gap() -> None:
 @pytest.mark.parametrize("name", NAMES)
 def test_the_array_path_matches_the_reference_on_every_fixture(name: str) -> None:
     binary = loader.load(FIXTURES / name)
-    runs = disasm.disassemble(binary.sections, binary.arch).runs
-    grams = digest.shingles(digest.normalise(runs))
-    assert digest.pack(grams) == reference_pack(grams)
+    runs = reference.disassemble(binary.sections, binary.arch).runs
+    grams = reference.shingles(reference.normalise(runs))
+    assert reference.pack(grams) == reference_pack(grams)

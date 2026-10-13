@@ -1,36 +1,21 @@
-# Turns straight-line runs of mnemonics into an EO1 digest, and scores digests against each other.
+# Parses EO1 digests and scores them against each other.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 
 import numpy
 
-from eous.vocab import load as load_vocab
-
 VERSION = "EO1"
-
-NGRAM = 6
 
 PERMUTATIONS = 256
 SLOT_BITS = 2
 
-# Prime keeps the affine map a bijection; Mersenne keeps the arithmetic inside 61 bits.
-MODULUS = (1 << 61) - 1
-
-SEPARATOR = b"\x1f"
-OOV = "<oov>"
-
 MAX_CONTAINMENT_RATIO = 4.0
 
 MAX_CARDINALITY = 2**53
-
-PERMUTATION_PERSON = b"eous-prm"
-SHINGLE_PERSON = b"eous-ng"
 
 FLOOR = 2.0**-SLOT_BITS
 MASK = (1 << SLOT_BITS) - 1
@@ -45,98 +30,11 @@ class DigestError(Exception):
     pass
 
 
-def h64(payload: bytes, person: bytes) -> int:
-    # BLAKE2b, since Python's built-in hash() is salted per process and would digest the
-    # same file differently on every run.
-    return int.from_bytes(hashlib.blake2b(payload, digest_size=8, person=person).digest(), "big")
-
-
-def _derive_permutations() -> tuple[tuple[int, int], ...]:
-    pairs = []
-    for index in range(PERMUTATIONS):
-        label = index.to_bytes(4, "big")
-        multiplier = h64(b"a" + label, PERMUTATION_PERSON) % (MODULUS - 1) + 1
-        offset = h64(b"b" + label, PERMUTATION_PERSON) % MODULUS
-        pairs.append((multiplier, offset))
-    return tuple(pairs)
-
-
-COEFFICIENTS = _derive_permutations()
-
-BLOCK = 4096
-
-
-# multiplier * hash needs 122 bits and numpy holds 64, so each number is multiplied in halves.
-@dataclass(frozen=True, eq=False)
-class _Table:
-    upper: numpy.ndarray
-    lower: numpy.ndarray
-    offsets: numpy.ndarray
-    modulus: numpy.uint64
-    width: numpy.uint64
-    split: numpy.uint64
-    half: numpy.uint64
-    carry_shift: numpy.uint64
-    carry: numpy.uint64
-    two: numpy.uint64
-
-
-@lru_cache(maxsize=1)
-def _table(coefficients: tuple[tuple[int, int], ...], modulus: int) -> _Table:
-    width = modulus.bit_length()
-    split = (width + 1) // 2
-    half = (1 << split) - 1
-    multipliers = numpy.array([pair[0] for pair in coefficients], dtype=numpy.uint64).reshape(-1, 1)
-    return _Table(
-        upper=multipliers >> numpy.uint64(split),
-        lower=multipliers & numpy.uint64(half),
-        offsets=numpy.array([pair[1] for pair in coefficients], dtype=numpy.uint64).reshape(-1, 1),
-        modulus=numpy.uint64(modulus),
-        width=numpy.uint64(width),
-        split=numpy.uint64(split),
-        half=numpy.uint64(half),
-        carry_shift=numpy.uint64(width - split),
-        carry=numpy.uint64((1 << (width - split)) - 1),
-        two=numpy.uint64(2),
-    )
-
-
-def _fold(values: numpy.ndarray, table: _Table) -> numpy.ndarray:
-    folded = (values & table.modulus) + (values >> table.width)
-    return folded - table.modulus * (folded >= table.modulus)
-
-
-def _shift(values: numpy.ndarray, table: _Table) -> numpy.ndarray:
-    carried = ((values & table.carry) << table.split) + (values >> table.carry_shift)
-    return _fold(carried, table)
-
-
-def _minima(hashes: numpy.ndarray) -> numpy.ndarray:
-    table = _table(COEFFICIENTS, MODULUS)
-    smallest = numpy.full(len(COEFFICIENTS), MODULUS, dtype=numpy.uint64)
-    for start in range(0, hashes.size, BLOCK):
-        block = _fold(hashes[start : start + BLOCK], table)
-        upper, lower = block >> table.split, block & table.half
-        permuted = _fold(
-            _fold(table.two * (table.upper * upper), table)
-            + _shift(_fold(table.upper * lower + table.lower * upper, table), table)
-            + _fold(table.lower * lower, table)
-            + table.offsets,
-            table,
-        )
-        smallest = numpy.minimum(smallest, permuted.min(axis=1))
-    return smallest
-
-
 @dataclass(frozen=True)
 class Sketch:
     target: str
     cardinality: int
     slots: int
-
-    def render(self) -> str:
-        body = self.slots.to_bytes(SKETCH_BYTES, "big").hex()
-        return f"{VERSION}:{self.target}:{self.cardinality}:{body}"
 
 
 @dataclass(frozen=True)
@@ -152,45 +50,6 @@ class Scores:
 def _check_target(target: str) -> None:
     if target not in TARGETS:
         raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
-
-
-def normalise(runs: tuple[tuple[str, ...], ...]) -> list[list[str]]:
-    roots = load_vocab()
-    return [[roots.get(mnemonic, OOV) for mnemonic in run] for run in runs]
-
-
-def shingles(runs: list[list[str]]) -> set[tuple[str, ...]]:
-    return {
-        tuple(run[start : start + NGRAM]) for run in runs for start in range(len(run) - NGRAM + 1)
-    }
-
-
-def pack(grams: set[tuple[str, ...]]) -> int:
-    if not grams:
-        raise DigestError("a sketch describes one shingle or more")
-
-    hashes = numpy.fromiter(
-        (
-            h64(SEPARATOR.join(token.encode("utf-8") for token in gram), SHINGLE_PERSON)
-            for gram in grams
-        ),
-        dtype=numpy.uint64,
-        count=len(grams),
-    )
-
-    accumulated = 0
-    for smallest in _minima(hashes):
-        accumulated = (accumulated << SLOT_BITS) | (int(smallest) & MASK)
-    return accumulated
-
-
-def digest(runs: tuple[tuple[str, ...], ...], target: str) -> str | None:
-    _check_target(target)
-    grams = shingles(normalise(runs))
-    if len({root for gram in grams for root in gram}) < 2:
-        return None
-
-    return Sketch(target, len(grams), pack(grams)).render()
 
 
 def parse(text: str) -> Sketch:

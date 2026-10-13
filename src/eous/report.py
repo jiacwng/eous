@@ -6,8 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from eous import disasm, loader
-from eous.digest import digest as build_digest
+from eous import _native, loader
 
 UNREADABLE = "unreadable"
 UNSUPPORTED_FORMAT = "unsupported_format"
@@ -64,7 +63,9 @@ def analyse(path: Path) -> Analysis:
     if share >= PACKED_SHARE:
         return _refuse(path, PACKED, f"{share:.0%} of executable code is compressed")
 
-    text = build_digest(disasm.disassemble(readable, binary.arch).runs, binary.target)
+    text = _native.digest(
+        [section.data for section in readable], loader.BITS[binary.arch], binary.target
+    )
 
     if text is None:
         return _refuse(path, UNREADABLE, "too little readable code")

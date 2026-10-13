@@ -2,8 +2,9 @@ from pathlib import Path
 
 import pytest
 
+import reference
 from conftest import FIXTURES, NAMES, stripped_elf
-from eous import digest, disasm, loader
+from eous import loader
 
 NOP = b"\x90"
 RET = b"\xc3"
@@ -18,16 +19,16 @@ def section(data: bytes, name: str = ".text", virtual_address: int = 0x1000) -> 
     return loader.Section(name=name, virtual_address=virtual_address, writable=False, data=data)
 
 
-def disassemble(*sections: loader.Section, arch: str = "x86") -> disasm.Disassembly:
-    return disasm.disassemble(sections, arch)
+def disassemble(*sections: loader.Section, arch: str = "x86") -> reference.Disassembly:
+    return reference.disassemble(sections, arch)
 
 
-def from_file(path: Path) -> disasm.Disassembly:
+def from_file(path: Path) -> reference.Disassembly:
     binary = loader.load(path)
-    return disasm.disassemble(binary.sections, binary.arch)
+    return reference.disassemble(binary.sections, binary.arch)
 
 
-def mnemonics(result: disasm.Disassembly) -> list[str]:
+def mnemonics(result: reference.Disassembly) -> list[str]:
     return [m for run in result.runs for m in run]
 
 
@@ -106,7 +107,7 @@ def test_a_prefixed_ordinary_instruction_leaves_the_run_open() -> None:
 
 # Filler between functions is one instruction repeated. A window past the cap repeats a
 # window already produced, so the cap is the shingle width and no number of its own.
-CAP = digest.NGRAM
+CAP = reference.NGRAM
 
 
 def test_a_long_repeat_is_capped_at_the_shingle_width() -> None:
@@ -138,15 +139,15 @@ def test_two_repeats_are_capped_separately() -> None:
 def test_capping_gives_the_shingle_set_that_keeping_everything_gives() -> None:
     capped = disassemble(section(XOR_EAX + NOP * 40 + RET + PUSH_EAX * 9 + RET), arch="x86-64")
     whole = (("xor", *["nop"] * 40, "ret"), ("push",) * 9 + ("ret",))
-    assert digest.shingles(digest.normalise(capped.runs)) == digest.shingles(
-        digest.normalise(whole)
+    assert reference.shingles(reference.normalise(capped.runs)) == reference.shingles(
+        reference.normalise(whole)
     )
 
 
 def test_a_short_run_is_kept_for_the_shingles_to_skip() -> None:
     result = disassemble(section(XOR_EAX + RET + (XOR_EAX * 3) + RET))
     assert result.runs == (("xor", "ret"), ("xor", "xor", "xor", "ret"))
-    assert digest.shingles(digest.normalise(result.runs)) == set()
+    assert reference.shingles(reference.normalise(result.runs)) == set()
 
 
 def test_an_empty_section_decodes_nothing() -> None:

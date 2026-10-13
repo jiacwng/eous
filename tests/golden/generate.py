@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
-from eous import digest, disasm, loader, toolchain
-
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+
+import reference  # noqa: E402
+from eous import _native, digest, loader, toolchain  # noqa: E402
+
 FIXTURES = HERE.parent / "fixtures" / "bin"
 VECTORS = HERE / "vectors.json"
 
@@ -32,21 +36,22 @@ def build() -> dict[str, object]:
     for path in sorted(FIXTURES.iterdir()):
         raw = path.read_bytes()
         binary = loader.load(path)
-        found = disasm.disassemble(binary.sections, binary.arch)
+        found = reference.disassemble(binary.sections, binary.arch)
+        sections = [section.data for section in binary.sections]
         files.append(
             {
                 "name": path.name,
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 "target": binary.target,
                 "decoded": found.total_decoded,
-                "runs": sum(len(run) >= digest.NGRAM for run in found.runs),
-                "digest": digest.digest(found.runs, binary.target),
+                "runs": sum(len(run) >= reference.NGRAM for run in found.runs),
+                "digest": _native.digest(sections, loader.BITS[binary.arch], binary.target),
             }
         )
 
     return {
         "version": digest.VERSION,
-        "ngram": digest.NGRAM,
+        "ngram": reference.NGRAM,
         "permutations": digest.PERMUTATIONS,
         "slot_bits": digest.SLOT_BITS,
         "engines": toolchain.engines(),
@@ -54,7 +59,7 @@ def build() -> dict[str, object]:
         "synthetic": {
             "target": SYNTHETIC_TARGET,
             "runs": [list(run) for run in SYNTHETIC_RUNS],
-            "digest": digest.digest(SYNTHETIC_RUNS, SYNTHETIC_TARGET),
+            "digest": reference.digest(SYNTHETIC_RUNS, SYNTHETIC_TARGET),
         },
     }
 
