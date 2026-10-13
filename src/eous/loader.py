@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import struct
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,8 @@ PE_ARCHES = {"I386": "x86", "AMD64": "x86-64"}
 ELF_ARCHES = {"I386": "x86", "X86_64": "x86-64"}
 
 BITS = {"x86": 32, "x86-64": 64}
+
+ENTROPY_CHUNK = 1 << 20
 
 
 class LoaderError(Exception):
@@ -67,7 +69,10 @@ class Binary:
 def data_entropy(data: bytes) -> float:
     if not data:
         return 0.0
-    counts = numpy.bincount(numpy.frombuffer(data, dtype=numpy.uint8), minlength=256)
+    view = numpy.frombuffer(data, dtype=numpy.uint8)
+    counts = numpy.zeros(256, dtype=numpy.int64)
+    for start in range(0, view.size, ENTROPY_CHUNK):
+        counts += numpy.bincount(view[start : start + ENTROPY_CHUNK], minlength=256)
     share = counts[counts > 0] / len(data)
     return float(-numpy.sum(share * numpy.log2(share)))
 
@@ -118,17 +123,19 @@ def load(path: Path) -> Binary:
         raise LoaderError("no recognised container")
 
     if isinstance(parsed, lief.PE.Binary):
-        return _load_pe(parsed)
+        return _load_pe(parsed, len(raw))
     if isinstance(parsed, lief.ELF.Binary):
-        return _load_elf(parsed)
+        return _load_elf(parsed, len(raw))
 
     family = type(parsed).__module__.rsplit(".", 1)[-1].lower()
     raise UnsupportedFormatError(family)
 
 
-def _load_pe(parsed: lief.PE.Binary) -> Binary:
+def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
     arch = _arch(lambda: parsed.header.machine, PE_ARCHES)
     characteristics = lief.PE.Section.CHARACTERISTICS
+    executable = [s for s in parsed.sections if s.has_characteristic(characteristics.MEM_EXECUTE)]
+    _check_overlap(executable, size)
     sections = [
         Section(
             name=_text(section.name),
@@ -136,8 +143,7 @@ def _load_pe(parsed: lief.PE.Binary) -> Binary:
             writable=section.has_characteristic(characteristics.MEM_WRITE),
             data=bytes(section.content),
         )
-        for section in parsed.sections
-        if section.has_characteristic(characteristics.MEM_EXECUTE)
+        for section in executable
     ]
     is_il_only, has_managed_native = read_clr(parsed)
 
@@ -151,9 +157,11 @@ def _load_pe(parsed: lief.PE.Binary) -> Binary:
     )
 
 
-def _load_elf(parsed: lief.ELF.Binary) -> Binary:
+def _load_elf(parsed: lief.ELF.Binary, size: int) -> Binary:
     arch = _arch(lambda: parsed.header.machine_type, ELF_ARCHES)
     flags = lief.ELF.Section.FLAGS
+    executable = [s for s in parsed.sections if s.has(flags.EXECINSTR)]
+    _check_overlap(executable, size)
     sections = [
         Section(
             name=_text(section.name),
@@ -161,12 +169,11 @@ def _load_elf(parsed: lief.ELF.Binary) -> Binary:
             writable=section.has(flags.WRITE),
             data=bytes(section.content),
         )
-        for section in parsed.sections
-        if section.has(flags.EXECINSTR)
+        for section in executable
     ]
     # A stripped ELF keeps its loadable segments, which is the usual shape of packed ELF.
     if not sections:
-        sections = list(_executable_segments(parsed))
+        sections = _executable_segments(parsed, size)
 
     return Binary(
         format="elf",
@@ -178,16 +185,25 @@ def _load_elf(parsed: lief.ELF.Binary) -> Binary:
     )
 
 
-def _executable_segments(parsed: lief.ELF.Binary) -> Iterator[Section]:
+def _executable_segments(parsed: lief.ELF.Binary, size: int) -> list[Section]:
     flags = lief.ELF.Segment.FLAGS
-    for index, segment in enumerate(parsed.segments):
-        if segment.has(flags.X):
-            yield Section(
-                name=f"segment{index}",
-                virtual_address=segment.virtual_address,
-                writable=segment.has(flags.W),
-                data=bytes(segment.content),
-            )
+    executable = [(index, s) for index, s in enumerate(parsed.segments) if s.has(flags.X)]
+    _check_overlap([segment for _, segment in executable], size)
+    return [
+        Section(
+            name=f"segment{index}",
+            virtual_address=segment.virtual_address,
+            writable=segment.has(flags.W),
+            data=bytes(segment.content),
+        )
+        for index, segment in executable
+    ]
+
+
+def _check_overlap(regions: list[Any], size: int) -> None:
+    code = sum(len(region.content) for region in regions)
+    if code > size:
+        raise LoaderError(f"executable code overlaps, {code} bytes of code in a {size} byte file")
 
 
 def _ordered(sections: list[Section]) -> tuple[Section, ...]:

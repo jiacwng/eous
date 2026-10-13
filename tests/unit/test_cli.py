@@ -4,6 +4,9 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from functools import cache
 from pathlib import Path
 
@@ -585,6 +588,64 @@ def test_a_file_name_cannot_forge_a_digest_line(
     lines = [line for line in output.readouterr().out.splitlines() if line]
     assert len(lines) == 2, "the newline in the name opened a third record"
     assert r"\x0a" in lines[0]
+
+
+ANALYSE = report.analyse
+
+
+def analyse_or_die(path: Path) -> report.Analysis:
+    if path.name.startswith("crash"):
+        os._exit(1)
+    return ANALYSE(path)
+
+
+def test_a_worker_that_dies_costs_only_its_own_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "a.exe", "b.exe", "crash1.exe", "crash2.exe", "d.exe")
+    monkeypatch.setattr(report, "analyse", analyse_or_die)
+    assert cli.main(["hash", str(tmp_path)]) == cli.REFUSED
+
+    captured = output.readouterr()
+    digested = [line.split("  ")[0] for line in captured.out.splitlines()]
+    assert digested == [str(tmp_path / name) for name in ("a.exe", "b.exe", "d.exe")]
+    refused = captured.err.splitlines()
+    assert len(refused) == 2
+    assert all("unreadable: the analysis process ended abruptly" in line for line in refused)
+
+
+class BreaksOnce:
+    broken = False
+
+    def __init__(self, max_workers: int | None = None) -> None:
+        pass
+
+    def __enter__(self) -> "BreaksOnce":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def map(self, function: Callable[[Path], report.Analysis], paths: list[Path]) -> object:
+        if not BreaksOnce.broken:
+            BreaksOnce.broken = True
+            raise BrokenProcessPool
+        return map(function, paths)
+
+    def submit(self, function: Callable[[Path], report.Analysis], path: Path) -> Future[object]:
+        future: Future[object] = Future()
+        future.set_result(function(path))
+        return future
+
+
+def test_a_pool_broken_before_any_result_still_digests_every_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "a.exe", "b.exe", "c.exe")
+    monkeypatch.setattr(BreaksOnce, "broken", False)
+    monkeypatch.setattr(cli, "ProcessPoolExecutor", BreaksOnce)
+    assert cli.main(["hash", str(tmp_path)]) == cli.OK
+    assert len(output.readouterr().out.splitlines()) == 3
 
 
 def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:

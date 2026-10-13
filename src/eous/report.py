@@ -35,6 +35,17 @@ class Analysis:
 
 def analyse(path: Path) -> Analysis:
     try:
+        return _analyse(path)
+    except MemoryError:
+        return _refuse(path, UNREADABLE, "out of memory")
+
+
+def crashed(path: Path) -> Analysis:
+    return _refuse(path, UNREADABLE, "the analysis process ended abruptly")
+
+
+def _analyse(path: Path) -> Analysis:
+    try:
         binary = loader.load(path)
     except loader.UnsupportedFormatError as exc:
         return _refuse(path, UNSUPPORTED_FORMAT, str(exc))

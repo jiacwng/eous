@@ -9,8 +9,9 @@ import io
 import json
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -540,8 +541,35 @@ def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
         yield from (report.analyse(path) for path in paths)
         return
 
+    remaining = paths
+    while remaining:
+        finished = yield from _pooled(remaining)
+        if finished == len(remaining):
+            return
+        yield _alone(remaining[finished])
+        remaining = remaining[finished + 1 :]
+
+
+# A worker that dies breaks the whole pool, so the first file left unfinished is rerun alone
+# to learn whether it is the cause, and the rest continue in a fresh pool.
+def _pooled(paths: list[Path]) -> Generator[report.Analysis, None, int]:
+    finished = 0
     with ProcessPoolExecutor() as pool:
-        yield from pool.map(report.analyse, paths)
+        try:
+            for result in pool.map(report.analyse, paths):
+                yield result
+                finished += 1
+        except BrokenProcessPool:
+            return finished
+    return finished
+
+
+def _alone(path: Path) -> report.Analysis:
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        try:
+            return pool.submit(report.analyse, path).result()
+        except BrokenProcessPool:
+            return report.crashed(path)
 
 
 def _expand(paths: list[Path]) -> list[Path]:

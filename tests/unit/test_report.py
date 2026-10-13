@@ -248,6 +248,14 @@ def test_a_packed_binary_disassembles_nothing(monkeypatch: pytest.MonkeyPatch) -
     assert with_code(monkeypatch, NOISE).refusal.reason == report.PACKED
 
 
+def test_running_out_of_memory_refuses_that_file_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    def exhausted(path: Path) -> loader.Binary:
+        raise MemoryError
+
+    monkeypatch.setattr(report.loader, "load", exhausted)
+    assert report.analyse(PE64).refusal == report.Refusal(report.UNREADABLE, "out of memory")
+
+
 def managed(
     monkeypatch: pytest.MonkeyPatch, *, il_only: bool, native: bool, entropy_bytes: bytes = b""
 ) -> None:

@@ -58,6 +58,60 @@ def test_data_entropy_of_a_repeated_byte_is_zero() -> None:
     assert loader.data_entropy(b"\x00" * 4096) == 0.0
 
 
+def test_data_entropy_is_the_same_counted_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    data = loader.load(PE64).sections[0].data
+    whole = loader.data_entropy(data)
+    monkeypatch.setattr(loader, "ENTROPY_CHUNK", 7)
+    assert loader.data_entropy(data) == whole
+
+
+def overlapping_elf(copies: int) -> bytes:
+    raw = ELF64.read_bytes()
+    table_offset = struct.unpack_from("<Q", raw, 0x28)[0]
+    entry_size, count = struct.unpack_from("<HH", raw, 0x3A)
+    table = raw[table_offset : table_offset + entry_size * count]
+    body = bytearray(raw[:table_offset])
+    extra = struct.pack("<IIQQQQIIQQ", 0, 1, 0x6, 0x400000, 0, len(body), 0, 0, 16, 0)
+    out = body + table + extra * copies
+    struct.pack_into("<Q", out, 0x28, len(body))
+    struct.pack_into("<H", out, 0x3C, count + copies)
+    return bytes(out)
+
+
+def test_executable_sections_that_overlap_are_refused(tmp_path: Path) -> None:
+    target = tmp_path / "overlap.elf"
+    target.write_bytes(overlapping_elf(2))
+    with pytest.raises(LoaderError, match="executable code overlaps"):
+        loader.load(target)
+
+
+def test_a_pe_whose_code_sections_share_raw_data_is_refused(tmp_path: Path) -> None:
+    raw = bytearray(PE64.read_bytes())
+    header = struct.unpack_from("<I", raw, 0x3C)[0]
+    count = struct.unpack_from("<H", raw, header + 6)[0]
+    table = header + 24 + struct.unpack_from("<H", raw, header + 20)[0]
+    entries = [table + 40 * index for index in range(count)]
+    code = next(e for e in entries if struct.unpack_from("<I", raw, e + 36)[0] & 0x20000000)
+    other = next(e for e in entries if e != code)
+    raw[other + 8 : other + 12] = raw[code + 8 : code + 12]
+    raw[other + 16 : other + 24] = raw[code + 16 : code + 24]
+    struct.pack_into("<I", raw, other + 36, struct.unpack_from("<I", raw, code + 36)[0])
+    target = tmp_path / "shared.exe"
+    target.write_bytes(bytes(raw))
+    with pytest.raises(LoaderError, match="executable code overlaps"):
+        loader.load(target)
+
+
+def test_a_stripped_elf_whose_segments_overlap_is_refused(tmp_path: Path) -> None:
+    raw = bytearray(stripped_elf(b"\x31\xc0\xc3" * 64))
+    program = bytes(raw[64:120])
+    struct.pack_into("<H", raw, 56, 3)
+    target = tmp_path / "segments.elf"
+    target.write_bytes(bytes(raw[:120]) + program * 2 + bytes(raw[120:]))
+    with pytest.raises(LoaderError, match="executable code overlaps"):
+        loader.load(target)
+
+
 def test_compiled_code_entropy_stays_under_the_threshold() -> None:
     binary = loader.load(PE64)
     text = binary.sections[0]
