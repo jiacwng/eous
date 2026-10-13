@@ -554,15 +554,15 @@ def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
 # A worker that dies breaks the whole pool, so the first file left unfinished is rerun alone
 # to learn whether it is the cause, and the rest continue in a fresh pool.
 def _pooled(paths: list[Path]) -> Generator[report.Analysis, None, int]:
+    finished = 0
     with ProcessPoolExecutor() as pool:
-        futures = [pool.submit(report.analyse, path) for path in paths]
-        for finished, future in enumerate(futures):
-            try:
-                result = future.result()
-            except BrokenProcessPool:
-                return finished
-            yield result
-    return len(paths)
+        try:
+            for result in pool.map(report.analyse, paths):
+                yield result
+                finished += 1
+        except BrokenProcessPool:
+            return finished
+    return finished
 
 
 def _alone(path: Path) -> report.Analysis:

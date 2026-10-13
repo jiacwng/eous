@@ -2,9 +2,11 @@ import errno
 import io
 import json
 import os
-import signal
 import subprocess
 import sys
+from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from functools import cache
 from pathlib import Path
 
@@ -593,12 +595,10 @@ ANALYSE = report.analyse
 
 def analyse_or_die(path: Path) -> report.Analysis:
     if path.name.startswith("crash"):
-        os.kill(os.getpid(), signal.SIGKILL)
+        os._exit(1)
     return ANALYSE(path)
 
 
-# Forked workers inherit the patched function, which spawned workers on Windows and macOS do not.
-@pytest.mark.skipif(sys.platform != "linux", reason="needs forked pool workers")
 def test_a_worker_that_dies_costs_only_its_own_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
@@ -612,6 +612,40 @@ def test_a_worker_that_dies_costs_only_its_own_file(
     refused = captured.err.splitlines()
     assert len(refused) == 2
     assert all("unreadable: the analysis process ended abruptly" in line for line in refused)
+
+
+class BreaksOnce:
+    broken = False
+
+    def __init__(self, max_workers: int | None = None) -> None:
+        pass
+
+    def __enter__(self) -> "BreaksOnce":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def map(self, function: Callable[[Path], report.Analysis], paths: list[Path]) -> object:
+        if not BreaksOnce.broken:
+            BreaksOnce.broken = True
+            raise BrokenProcessPool
+        return map(function, paths)
+
+    def submit(self, function: Callable[[Path], report.Analysis], path: Path) -> Future[object]:
+        future: Future[object] = Future()
+        future.set_result(function(path))
+        return future
+
+
+def test_a_pool_broken_before_any_result_still_digests_every_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "a.exe", "b.exe", "c.exe")
+    monkeypatch.setattr(BreaksOnce, "broken", False)
+    monkeypatch.setattr(cli, "ProcessPoolExecutor", BreaksOnce)
+    assert cli.main(["hash", str(tmp_path)]) == cli.OK
+    assert len(output.readouterr().out.splitlines()) == 3
 
 
 def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:

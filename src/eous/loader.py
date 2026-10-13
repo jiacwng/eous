@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 import warnings
 from collections.abc import Callable
@@ -211,7 +212,8 @@ def _check_limit(regions: list[Any]) -> None:
     size = sum(len(region.content) for region in regions)
     if size > CODE_LIMIT:
         raise CodeTooLargeError(
-            f"{size / MIB:.1f} MiB of executable code, limit {CODE_LIMIT // MIB} MiB"
+            f"{math.ceil(size * 10 / MIB) / 10} MiB of executable code, "
+            f"limit {CODE_LIMIT // MIB} MiB"
         )
 
 
