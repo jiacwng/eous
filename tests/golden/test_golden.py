@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
+import reference
 from conftest import FIXTURES
-from eous import cli, digest, disasm, loader, toolchain
+from eous import _native, cli, digest, loader, toolchain
 
 VECTORS = json.loads((Path(__file__).resolve().parent / "vectors.json").read_text(encoding="utf-8"))
 
@@ -19,7 +20,8 @@ IDS = [entry["name"] for entry in FILES]
 def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> None:
     path = FIXTURES / str(entry["name"])
     binary = loader.load(path)
-    produced = digest.digest(disasm.disassemble(binary.sections, binary.arch).runs, binary.target)
+    sections = [section.data for section in binary.sections]
+    produced = _native.digest(sections, loader.BITS[binary.arch], binary.target)
     assert produced == entry["digest"]
 
 
@@ -46,17 +48,17 @@ def test_a_fixture_is_the_file_the_vector_was_taken_from(entry: dict[str, object
 @pytest.mark.parametrize("entry", FILES, ids=IDS)
 def test_the_stages_before_the_digest_stay_put(entry: dict[str, object]) -> None:
     binary = loader.load(FIXTURES / str(entry["name"]))
-    found = disasm.disassemble(binary.sections, binary.arch)
+    found = reference.disassemble(binary.sections, binary.arch)
     assert binary.target == entry["target"]
     assert found.total_decoded == entry["decoded"]
-    assert sum(len(run) >= digest.NGRAM for run in found.runs) == entry["runs"]
+    assert sum(len(run) >= reference.NGRAM for run in found.runs) == entry["runs"]
 
 
 # Hand-written runs, so an algorithm change and a rebuilt fixture fail separately.
 def test_the_synthetic_case_reproduces() -> None:
     case = VECTORS["synthetic"]
     runs = tuple(tuple(run) for run in case["runs"])
-    assert digest.digest(runs, case["target"]) == case["digest"]
+    assert reference.digest(runs, case["target"]) == case["digest"]
 
 
 # A digest is only reproducible under the decoder that produced it.
@@ -66,9 +68,11 @@ def test_the_recorded_engines_are_the_installed_ones() -> None:
 
 def test_the_recorded_parameters_match_the_code() -> None:
     assert VECTORS["version"] == digest.VERSION
-    assert VECTORS["ngram"] == digest.NGRAM
+    assert VECTORS["ngram"] == reference.NGRAM
     assert VECTORS["permutations"] == digest.PERMUTATIONS
     assert VECTORS["slot_bits"] == digest.SLOT_BITS
+    assert reference.PERMUTATIONS == digest.PERMUTATIONS
+    assert reference.SLOT_BITS == digest.SLOT_BITS
 
 
 def test_every_fixture_has_a_vector() -> None:
@@ -84,8 +88,8 @@ def test_every_fixture_has_a_vector() -> None:
         ("NGRAM", 5),
         ("SLOT_BITS", 1),
         ("MODULUS", (1 << 31) - 1),
-        ("COEFFICIENTS", digest.COEFFICIENTS[:128]),
-        ("COEFFICIENTS", tuple(reversed(digest.COEFFICIENTS))),
+        ("COEFFICIENTS", reference.COEFFICIENTS[:128]),
+        ("COEFFICIENTS", tuple(reversed(reference.COEFFICIENTS))),
         ("SEPARATOR", b"\x00"),
         ("SHINGLE_PERSON", b"eous-xx"),
     ],
@@ -104,5 +108,5 @@ def test_a_changed_parameter_breaks_the_vector(
 ) -> None:
     case = VECTORS["synthetic"]
     runs = tuple(tuple(run) for run in case["runs"])
-    monkeypatch.setattr(digest, attribute, value)
-    assert digest.digest(runs, case["target"]) != case["digest"]
+    monkeypatch.setattr(reference, attribute, value)
+    assert reference.digest(runs, case["target"]) != case["digest"]

@@ -7,7 +7,7 @@ import lief
 import pytest
 
 from conftest import ELF64, FIXTURES, JUNK, MACHO, NAMES, PE64, elf_header
-from eous import disasm, loader, report
+from eous import loader, report
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -242,9 +242,9 @@ def test_an_empty_section_is_not_packed(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_a_packed_binary_disassembles_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     def unreachable(*args: object, **kwargs: object) -> object:
-        raise AssertionError("the disassembler ran")
+        raise AssertionError("the digest was built")
 
-    monkeypatch.setattr(report.disasm, "disassemble", unreachable)
+    monkeypatch.setattr(report._native, "digest", unreachable)
     assert with_code(monkeypatch, NOISE).refusal.reason == report.PACKED
 
 
@@ -288,10 +288,10 @@ def test_managed_is_judged_before_packed(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_the_managed_refusal_disassembles_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     def unreachable(*args: object, **kwargs: object) -> object:
-        raise AssertionError("the disassembler ran")
+        raise AssertionError("the digest was built")
 
     managed(monkeypatch, il_only=True, native=False)
-    monkeypatch.setattr(report.disasm, "disassemble", unreachable)
+    monkeypatch.setattr(report._native, "digest", unreachable)
     assert report.analyse(PE64).refusal.reason == report.MANAGED
 
 
@@ -327,11 +327,9 @@ def test_format_is_judged_before_architecture(tmp_path: Path) -> None:
 
 def test_every_result_is_frozen() -> None:
     binary = loader.load(ELF64)
-    found = disasm.disassemble(binary.sections, binary.arch)
     results = [
         (binary, "arch"),
         (binary.sections[0], "name"),
-        (found, "total_decoded"),
         (report.analyse(ELF64), "digest"),
         (report.Refusal(report.UNREADABLE, "gone"), "reason"),
     ]
