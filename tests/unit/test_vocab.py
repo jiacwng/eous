@@ -13,13 +13,22 @@ def test_every_entry_is_a_mnemonic_the_decoder_emits() -> None:
     assert set(reference.roots()) <= set(reference.MNEMONICS.values())
 
 
+# iced names data bytes and failed decodes with these, and never emits them for an instruction.
+PLACEHOLDERS = {"invalid", "db", "dw", "dd", "dq", "zero_bytes"}
+
+
+def test_every_mnemonic_the_decoder_emits_has_a_root() -> None:
+    emitted = set(reference.MNEMONICS.values()) - PLACEHOLDERS
+    assert sorted(emitted - set(reference.roots())) == []
+
+
 # Every entry shapes digests, so the table is pinned the way the golden vectors are.
 def test_the_table_is_the_one_the_vectors_were_taken_from() -> None:
     raw = reference.ROOTS_FILE.read_bytes()
-    assert len(reference.roots()) == 1394
+    assert len(reference.roots()) == 1888
     assert len(set(reference.roots().values())) == 84
     assert hashlib.sha256(raw).hexdigest() == (
-        "52bfae704f5f7d5c7eaefcd2b06444f14e9d4d5e0103132a15fa7d27e0b74546"
+        "0281f1015e99b9f05e6f632c657d777acd1141f55844211008b0605a59438807"
     )
 
 
