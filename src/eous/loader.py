@@ -203,9 +203,7 @@ def _executable_segments(parsed: lief.ELF.Binary, size: int) -> list[Section]:
 def _check_overlap(regions: list[Any], size: int) -> None:
     code = sum(len(region.content) for region in regions)
     if code > size:
-        raise LoaderError(
-            f"executable sections overlap, {code} bytes of code in a {size} byte file"
-        )
+        raise LoaderError(f"executable code overlaps, {code} bytes of code in a {size} byte file")
 
 
 def _ordered(sections: list[Section]) -> tuple[Section, ...]:

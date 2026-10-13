@@ -81,7 +81,24 @@ def overlapping_elf(copies: int) -> bytes:
 def test_executable_sections_that_overlap_are_refused(tmp_path: Path) -> None:
     target = tmp_path / "overlap.elf"
     target.write_bytes(overlapping_elf(2))
-    with pytest.raises(LoaderError, match="executable sections overlap"):
+    with pytest.raises(LoaderError, match="executable code overlaps"):
+        loader.load(target)
+
+
+def test_a_pe_whose_code_sections_share_raw_data_is_refused(tmp_path: Path) -> None:
+    raw = bytearray(PE64.read_bytes())
+    header = struct.unpack_from("<I", raw, 0x3C)[0]
+    count = struct.unpack_from("<H", raw, header + 6)[0]
+    table = header + 24 + struct.unpack_from("<H", raw, header + 20)[0]
+    entries = [table + 40 * index for index in range(count)]
+    code = next(e for e in entries if struct.unpack_from("<I", raw, e + 36)[0] & 0x20000000)
+    other = next(e for e in entries if e != code)
+    raw[other + 8 : other + 12] = raw[code + 8 : code + 12]
+    raw[other + 16 : other + 24] = raw[code + 16 : code + 24]
+    struct.pack_into("<I", raw, other + 36, struct.unpack_from("<I", raw, code + 36)[0])
+    target = tmp_path / "shared.exe"
+    target.write_bytes(bytes(raw))
+    with pytest.raises(LoaderError, match="executable code overlaps"):
         loader.load(target)
 
 
@@ -91,7 +108,7 @@ def test_a_stripped_elf_whose_segments_overlap_is_refused(tmp_path: Path) -> Non
     struct.pack_into("<H", raw, 56, 3)
     target = tmp_path / "segments.elf"
     target.write_bytes(bytes(raw[:120]) + program * 2 + bytes(raw[120:]))
-    with pytest.raises(LoaderError, match="executable sections overlap"):
+    with pytest.raises(LoaderError, match="executable code overlaps"):
         loader.load(target)
 
 
