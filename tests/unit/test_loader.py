@@ -58,6 +58,60 @@ def test_data_entropy_of_a_repeated_byte_is_zero() -> None:
     assert loader.data_entropy(b"\x00" * 4096) == 0.0
 
 
+def test_data_entropy_is_the_same_counted_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    data = loader.load(PE64).sections[0].data
+    whole = loader.data_entropy(data)
+    monkeypatch.setattr(loader, "ENTROPY_CHUNK", 7)
+    assert loader.data_entropy(data) == whole
+
+
+def overlapping_elf(copies: int) -> bytes:
+    raw = ELF64.read_bytes()
+    table_offset = struct.unpack_from("<Q", raw, 0x28)[0]
+    entry_size, count = struct.unpack_from("<HH", raw, 0x3A)
+    table = raw[table_offset : table_offset + entry_size * count]
+    body = bytearray(raw[:table_offset])
+    extra = struct.pack("<IIQQQQIIQQ", 0, 1, 0x6, 0x400000, 0, len(body), 0, 0, 16, 0)
+    out = body + table + extra * copies
+    struct.pack_into("<Q", out, 0x28, len(body))
+    struct.pack_into("<H", out, 0x3C, count + copies)
+    return bytes(out)
+
+
+def test_code_over_the_limit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    code = sum(len(s.data) for s in loader.load(PE64).sections)
+    monkeypatch.setattr(loader, "CODE_LIMIT", code - 1)
+    with pytest.raises(loader.CodeTooLargeError, match="MiB of executable code, limit"):
+        loader.load(PE64)
+
+
+def test_code_exactly_at_the_limit_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    code = sum(len(s.data) for s in loader.load(PE64).sections)
+    monkeypatch.setattr(loader, "CODE_LIMIT", code)
+    assert loader.load(PE64).sections
+
+
+def test_overlapping_sections_count_against_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "overlap.elf"
+    target.write_bytes(overlapping_elf(8))
+    monkeypatch.setattr(loader, "CODE_LIMIT", 4 * target.stat().st_size)
+    with pytest.raises(loader.CodeTooLargeError):
+        loader.load(target)
+
+
+def test_a_stripped_elf_segment_counts_against_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = (b"\x31\xc0" + b"\xc3") * 20
+    target = tmp_path / "stripped.elf"
+    target.write_bytes(stripped_elf(code))
+    monkeypatch.setattr(loader, "CODE_LIMIT", len(code) - 1)
+    with pytest.raises(loader.CodeTooLargeError):
+        loader.load(target)
+
+
 def test_compiled_code_entropy_stays_under_the_threshold() -> None:
     binary = loader.load(PE64)
     text = binary.sections[0]

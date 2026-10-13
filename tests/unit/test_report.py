@@ -248,6 +248,23 @@ def test_a_packed_binary_disassembles_nothing(monkeypatch: pytest.MonkeyPatch) -
     assert with_code(monkeypatch, NOISE).refusal.reason == report.PACKED
 
 
+def test_code_over_the_limit_refuses_as_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(loader, "CODE_LIMIT", 1)
+    result = report.analyse(PE64)
+    assert result.digest is None
+    assert result.refusal is not None
+    assert result.refusal.reason == report.TOO_LARGE
+    assert result.refusal.detail.endswith("MiB of executable code, limit 0 MiB")
+
+
+def test_running_out_of_memory_refuses_that_file_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    def exhausted(path: Path) -> loader.Binary:
+        raise MemoryError
+
+    monkeypatch.setattr(report.loader, "load", exhausted)
+    assert report.analyse(PE64).refusal == report.Refusal(report.TOO_LARGE, "out of memory")
+
+
 def managed(
     monkeypatch: pytest.MonkeyPatch, *, il_only: bool, native: bool, entropy_bytes: bytes = b""
 ) -> None:

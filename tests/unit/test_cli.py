@@ -2,6 +2,7 @@ import errno
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 from functools import cache
@@ -585,6 +586,32 @@ def test_a_file_name_cannot_forge_a_digest_line(
     lines = [line for line in output.readouterr().out.splitlines() if line]
     assert len(lines) == 2, "the newline in the name opened a third record"
     assert r"\x0a" in lines[0]
+
+
+ANALYSE = report.analyse
+
+
+def analyse_or_die(path: Path) -> report.Analysis:
+    if path.name.startswith("crash"):
+        os.kill(os.getpid(), signal.SIGKILL)
+    return ANALYSE(path)
+
+
+# Forked workers inherit the patched function, which spawned workers on Windows and macOS do not.
+@pytest.mark.skipif(sys.platform != "linux", reason="needs forked pool workers")
+def test_a_worker_that_dies_costs_only_its_own_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "a.exe", "b.exe", "crash1.exe", "crash2.exe", "d.exe")
+    monkeypatch.setattr(report, "analyse", analyse_or_die)
+    assert cli.main(["hash", str(tmp_path)]) == cli.REFUSED
+
+    captured = output.readouterr()
+    digested = [line.split("  ")[0] for line in captured.out.splitlines()]
+    assert digested == [str(tmp_path / name) for name in ("a.exe", "b.exe", "d.exe")]
+    refused = captured.err.splitlines()
+    assert len(refused) == 2
+    assert all("unreadable: the analysis process ended abruptly" in line for line in refused)
 
 
 def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:

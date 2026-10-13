@@ -9,8 +9,9 @@ import io
 import json
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -80,6 +81,7 @@ a refusal names its cause:
   eous: packed.exe:    packed: 100% of executable code is compressed
   eous: library.dll:   managed: il only, no native code
   eous: resources.dll: no_code: no executable section
+  eous: huge.dll:      too_large: 600.0 MiB of executable code, limit 512 MiB
   eous: notes.txt:     unreadable: no recognised container
 
 every file eous declines to digest is reported with its cause. A digest is
@@ -540,8 +542,35 @@ def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
         yield from (report.analyse(path) for path in paths)
         return
 
+    remaining = paths
+    while remaining:
+        finished = yield from _pooled(remaining)
+        if finished == len(remaining):
+            return
+        yield _alone(remaining[finished])
+        remaining = remaining[finished + 1 :]
+
+
+# A worker that dies breaks the whole pool, so the first file left unfinished is rerun alone
+# to learn whether it is the cause, and the rest continue in a fresh pool.
+def _pooled(paths: list[Path]) -> Generator[report.Analysis, None, int]:
     with ProcessPoolExecutor() as pool:
-        yield from pool.map(report.analyse, paths)
+        futures = [pool.submit(report.analyse, path) for path in paths]
+        for finished, future in enumerate(futures):
+            try:
+                result = future.result()
+            except BrokenProcessPool:
+                return finished
+            yield result
+    return len(paths)
+
+
+def _alone(path: Path) -> report.Analysis:
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        try:
+            return pool.submit(report.analyse, path).result()
+        except BrokenProcessPool:
+            return report.crashed(path)
 
 
 def _expand(paths: list[Path]) -> list[Path]:

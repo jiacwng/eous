@@ -15,6 +15,7 @@ UNSUPPORTED_ARCH = "unsupported_arch"
 PACKED = "packed"
 MANAGED = "managed"
 NO_CODE = "no_code"
+TOO_LARGE = "too_large"
 PACKED_SHARE = 0.5
 
 # 7.0 catches 44.1% of packed files, against 41.7% at 7.2, with the same 0.1% false alarms.
@@ -36,7 +37,20 @@ class Analysis:
 
 def analyse(path: Path) -> Analysis:
     try:
+        return _analyse(path)
+    except MemoryError:
+        return _refuse(path, TOO_LARGE, "out of memory")
+
+
+def crashed(path: Path) -> Analysis:
+    return _refuse(path, UNREADABLE, "the analysis process ended abruptly")
+
+
+def _analyse(path: Path) -> Analysis:
+    try:
         binary = loader.load(path)
+    except loader.CodeTooLargeError as exc:
+        return _refuse(path, TOO_LARGE, str(exc))
     except loader.UnsupportedFormatError as exc:
         return _refuse(path, UNSUPPORTED_FORMAT, str(exc))
     except loader.UnsupportedArchError as exc:
