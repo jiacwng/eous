@@ -9,7 +9,7 @@ description = "Fuzzy hashing tool for PE and ELF binaries on x86 and x86-64"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [{ name = "Jiacheng Wang" }]
 keywords = [
     "binary-analysis",
@@ -29,7 +29,6 @@ classifiers = [
     "Intended Audience :: Information Technology",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Rust",
