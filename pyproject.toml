@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "eous"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fuzzy hashing tool for PE and ELF binaries on x86 and x86-64"
 readme = "README.md"
 license = "MIT"
