@@ -2,6 +2,8 @@
 name = "eous-native"
 version = "0.1.0"
 edition = "2021"
+description = "The native digest pipeline of eous"
+license = "MIT"
 publish = false
 
 [lib]

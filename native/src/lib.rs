@@ -5,15 +5,20 @@ use std::sync::OnceLock;
 
 use blake2b_simd::Params;
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 
 const ICED_X86: &str = "1.21.0";
 const ROOTS_JSON: &str = include_str!("../roots.json");
 const OOV: &str = "<oov>";
+const VERSION: &str = "EO1";
+const TARGETS: [&str; 4] = ["pe32", "pe64", "elf32", "elf64"];
+const BITNESSES: [u32; 2] = [32, 64];
 
 const NGRAM: usize = 6;
 const PERMUTATIONS: usize = 256;
+const SLOT_BITS: u32 = 2;
 const MODULUS: u64 = (1 << 61) - 1;
 const SEPARATOR: u8 = 0x1f;
 const PERMUTATION_PERSON: &[u8] = b"eous-prm";
@@ -34,8 +39,7 @@ fn vocabulary() -> &'static Vocabulary {
     VOCABULARY.get_or_init(|| {
         let table: HashMap<String, String> =
             serde_json::from_str(ROOTS_JSON).expect("roots.json is a flat object of strings");
-        // Id 0 is never a root, so it can mark the end of a run inside a shingle key.
-        let mut names = vec![String::new()];
+        let mut names: Vec<String> = Vec::new();
         let ids = Mnemonic::values()
             .map(|mnemonic| {
                 let name = format!("{mnemonic:?}").to_lowercase();
@@ -51,7 +55,7 @@ fn vocabulary() -> &'static Vocabulary {
             })
             .collect();
         assert!(
-            names.len() < 1 << ROOT_BITS,
+            names.len() <= 1 << ROOT_BITS,
             "roots exceed the shingle key width"
         );
         Vocabulary { names, ids }
@@ -198,12 +202,13 @@ fn sketch(keys: &[u64], names: &[String]) -> String {
             *slot = (*slot).min(permute(multiplier, offset, value));
         }
     }
+    let slot_mask = (1 << SLOT_BITS) - 1;
     smallest
-        .chunks(4)
+        .chunks((u8::BITS / SLOT_BITS) as usize)
         .map(|slots| {
-            slots
-                .iter()
-                .fold(0u8, |byte, &slot| (byte << 2) | (slot & 3) as u8)
+            slots.iter().fold(0u8, |byte, &slot| {
+                (byte << SLOT_BITS) | (slot & slot_mask) as u8
+            })
         })
         .map(|byte| format!("{byte:02x}"))
         .collect()
@@ -215,9 +220,19 @@ fn digest(
     sections: Vec<PyBackedBytes>,
     bitness: u32,
     target: &str,
-) -> Option<String> {
+) -> PyResult<Option<String>> {
+    if !BITNESSES.contains(&bitness) {
+        return Err(PyValueError::new_err(format!(
+            "unsupported bitness {bitness}"
+        )));
+    }
+    if !TARGETS.contains(&target) {
+        return Err(PyValueError::new_err(format!(
+            "unsupported target {target:?}"
+        )));
+    }
     let vocabulary = vocabulary();
-    py.detach(|| {
+    Ok(py.detach(|| {
         let mut shingles = Shingles::new();
         for section in &sections {
             disassemble(section, bitness, &vocabulary.ids, &mut shingles);
@@ -232,8 +247,8 @@ fn digest(
             return None;
         }
         let body = sketch(&keys, &vocabulary.names);
-        Some(format!("EO1:{target}:{}:{body}", keys.len()))
-    })
+        Some(format!("{VERSION}:{target}:{}:{body}", keys.len()))
+    }))
 }
 
 #[pymodule]
