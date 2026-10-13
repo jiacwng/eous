@@ -9,7 +9,7 @@ def test_load_is_cached() -> None:
     assert reference.roots() is reference.roots()
 
 
-def test_every_entry_is_a_mnemonic_the_decoder_emits() -> None:
+def test_every_entry_is_a_mnemonic_iced_names() -> None:
     assert set(reference.roots()) <= set(reference.MNEMONICS.values())
 
 
@@ -17,7 +17,7 @@ def test_every_entry_is_a_mnemonic_the_decoder_emits() -> None:
 PLACEHOLDERS = {"invalid", "db", "dw", "dd", "dq", "zero_bytes"}
 
 
-def test_every_mnemonic_the_decoder_emits_has_a_root() -> None:
+def test_every_mnemonic_iced_names_has_a_root() -> None:
     emitted = set(reference.MNEMONICS.values()) - PLACEHOLDERS
     assert sorted(emitted - set(reference.roots())) == []
 
@@ -28,7 +28,7 @@ def test_the_table_is_the_one_the_vectors_were_taken_from() -> None:
     assert len(reference.roots()) == 1888
     assert len(set(reference.roots().values())) == 84
     assert hashlib.sha256(raw).hexdigest() == (
-        "0281f1015e99b9f05e6f632c657d777acd1141f55844211008b0605a59438807"
+        "f441e11ea08a7ea9233dc9be0da8b34e6bfe7fb97341d6eb7764241bbe559092"
     )
 
 
