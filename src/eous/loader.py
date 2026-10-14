@@ -37,8 +37,6 @@ PE_CONFIG.parse_exports = False
 PE_CONFIG.parse_imports = False
 PE_CONFIG.parse_rsrc = False
 PE_CONFIG.parse_reloc = False
-PE_CONFIG.parse_exceptions = False
-PE_CONFIG.parse_arm64x_binary = False
 
 ELF_CONFIG = lief.ELF.ParserConfig()
 ELF_CONFIG.parse_dyn_symbols = False
