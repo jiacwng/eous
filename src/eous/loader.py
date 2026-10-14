@@ -31,6 +31,23 @@ ENTROPY_CHUNK = 1 << 20
 
 SECTION_DATA_RATIO = 2
 
+PE_CONFIG = lief.PE.ParserConfig()
+PE_CONFIG.parse_signature = False
+PE_CONFIG.parse_exports = False
+PE_CONFIG.parse_imports = False
+PE_CONFIG.parse_rsrc = False
+PE_CONFIG.parse_reloc = False
+PE_CONFIG.parse_exceptions = False
+PE_CONFIG.parse_arm64x_binary = False
+
+ELF_CONFIG = lief.ELF.ParserConfig()
+ELF_CONFIG.parse_dyn_symbols = False
+ELF_CONFIG.parse_symtab_symbols = False
+ELF_CONFIG.parse_symbol_versions = False
+ELF_CONFIG.parse_relocations = False
+ELF_CONFIG.parse_notes = False
+ELF_CONFIG.parse_overlay = False
+
 
 class LoaderError(Exception):
     pass
@@ -118,7 +135,7 @@ def load(path: Path) -> Binary:
 
     _check_pe_sections(raw)
     try:
-        parsed = lief.parse(raw)
+        parsed = _parse(raw)
     except Exception as exc:
         raise LoaderError(f"cannot parse: {exc}") from exc
 
@@ -132,6 +149,14 @@ def load(path: Path) -> Binary:
 
     family = type(parsed).__module__.rsplit(".", 1)[-1].lower()
     raise UnsupportedFormatError(family)
+
+
+def _parse(raw: bytes) -> object:
+    if raw[:2] == b"MZ":
+        return lief.PE.parse(raw, PE_CONFIG)
+    if raw[:4] == b"\x7fELF":
+        return lief.ELF.parse(raw, ELF_CONFIG)
+    return lief.parse(raw)
 
 
 def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
