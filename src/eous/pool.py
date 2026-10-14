@@ -10,11 +10,16 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from multiprocessing.connection import Connection, wait
+from multiprocessing.connection import wait
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 
 from eous import report
+
+if sys.platform == "win32":
+    from multiprocessing.connection import PipeConnection as Connection
+else:
+    from multiprocessing.connection import Connection
 
 MEMORY_BASE = 512 << 20
 MEMORY_PER_BYTE = 4
