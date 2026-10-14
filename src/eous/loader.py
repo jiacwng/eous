@@ -29,6 +29,8 @@ BITS = {"x86": 32, "x86-64": 64}
 
 ENTROPY_CHUNK = 1 << 20
 
+SECTION_DATA_RATIO = 2
+
 
 class LoaderError(Exception):
     pass
@@ -114,6 +116,7 @@ def load(path: Path) -> Binary:
     except OSError as exc:
         raise LoaderError(f"cannot read: {exc.strerror}") from exc
 
+    _check_pe_sections(raw)
     try:
         parsed = lief.parse(raw)
     except Exception as exc:
@@ -198,6 +201,25 @@ def _executable_segments(parsed: lief.ELF.Binary, size: int) -> list[Section]:
         )
         for index, segment in executable
     ]
+
+
+def _check_pe_sections(raw: bytes) -> None:
+    if len(raw) < 0x40 or raw[:2] != b"MZ":
+        return
+    header = struct.unpack_from("<I", raw, 0x3C)[0]
+    if header + 24 > len(raw) or raw[header : header + 4] != b"PE\0\0":
+        return
+    count, _, _, _, optional_size = struct.unpack_from("<HIIIH", raw, header + 6)
+    table = header + 24 + optional_size
+    end = min(table + 40 * count, len(raw))
+    claimed = 0
+    for entry in range(table, end - 39, 40):
+        raw_size, pointer = struct.unpack_from("<II", raw, entry + 16)
+        claimed += min(raw_size, max(0, len(raw) - pointer))
+    if claimed > SECTION_DATA_RATIO * len(raw):
+        raise LoaderError(
+            f"sections overlap, {claimed} bytes of section data in a {len(raw)} byte file"
+        )
 
 
 def _check_overlap(regions: list[Any], size: int) -> None:

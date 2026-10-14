@@ -102,6 +102,37 @@ def test_a_pe_whose_code_sections_share_raw_data_is_refused(tmp_path: Path) -> N
         loader.load(target)
 
 
+def pe_with_every_section_claiming_the_file() -> bytes:
+    raw = bytearray(PE64.read_bytes())
+    header = struct.unpack_from("<I", raw, 0x3C)[0]
+    count = struct.unpack_from("<H", raw, header + 6)[0]
+    table = header + 24 + struct.unpack_from("<H", raw, header + 20)[0]
+    for index in range(count):
+        struct.pack_into("<II", raw, table + 40 * index + 16, len(raw), 0)
+    return bytes(raw)
+
+
+def test_a_pe_whose_sections_claim_the_file_many_times_is_refused_before_lief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "claims.exe"
+    target.write_bytes(pe_with_every_section_claiming_the_file())
+
+    def parse(raw: bytes) -> None:
+        raise AssertionError("lief.parse was reached")
+
+    monkeypatch.setattr(loader.lief, "parse", parse)
+    with pytest.raises(LoaderError, match="sections overlap"):
+        loader.load(target)
+
+
+@pytest.mark.parametrize("cut", [0x3C, 0x50, 0x100, 0x180 + 40 * 2 + 10])
+def test_a_truncated_pe_header_is_left_to_lief(cut: int) -> None:
+    claims = pe_with_every_section_claiming_the_file()
+    loader._check_pe_sections(PE64.read_bytes()[:cut])
+    loader._check_pe_sections(claims[:cut])
+
+
 def test_a_stripped_elf_whose_segments_overlap_is_refused(tmp_path: Path) -> None:
     raw = bytearray(stripped_elf(b"\x31\xc0\xc3" * 64))
     program = bytes(raw[64:120])
