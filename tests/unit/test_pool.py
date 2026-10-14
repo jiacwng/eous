@@ -23,6 +23,9 @@ def test_a_worker_cannot_allocate_past_its_memory_limit(monkeypatch: pytest.Monk
     assert result.refusal.detail == "held"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows accepts the write and the file reads as crashed"
+)
 def test_a_worker_that_died_while_idle_is_replaced_before_its_next_file() -> None:
     worker = pool._start(report.analyse)
     worker.process.kill()
