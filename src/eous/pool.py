@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import multiprocessing
 import os
 import sys
@@ -26,6 +27,7 @@ MEMORY_PER_BYTE = 4
 TIME_BASE = 30.0
 TIME_PER_BYTE = 1.0 / (1 << 20)
 SHUTDOWN_SECONDS = 5.0
+WINDOWS_WAIT_LIMIT = 61
 
 Analyse = Callable[[Path], report.Analysis]
 
@@ -42,12 +44,11 @@ class _Worker:
 def analyse(paths: list[Path], analyse_one: Analyse) -> Iterator[report.Analysis]:
     sizes = [_size(path) for path in paths]
     queue = iter(range(len(paths)))
-    workers = [_start(analyse_one) for _ in range(min(len(paths), os.cpu_count() or 1))]
+    workers = [_start(analyse_one) for _ in range(min(len(paths), _worker_count()))]
     done: dict[int, report.Analysis] = {}
     following = 0
     try:
-        for worker in workers:
-            _assign(worker, queue, paths, sizes)
+        workers = [_assign(worker, analyse_one, queue, paths, sizes) for worker in workers]
         while following < len(paths):
             busy = [worker for worker in workers if worker.index is not None]
             nearest = min(worker.deadline for worker in busy)
@@ -60,19 +61,19 @@ def analyse(paths: list[Path], analyse_one: Analyse) -> Iterator[report.Analysis
                 if worker.connection in ready:
                     try:
                         outcome = worker.connection.recv()
-                    except EOFError:
+                    except (EOFError, OSError):
                         outcome = report.crashed(paths[index])
-                        worker = workers[slot] = _replace(worker, analyse_one)
+                        worker = _replace(worker, analyse_one)
                     if isinstance(outcome, BaseException):
                         raise outcome
                 elif time.monotonic() >= worker.deadline:
                     outcome = report.overran(paths[index], worker.seconds)
-                    worker = workers[slot] = _replace(worker, analyse_one)
+                    worker = _replace(worker, analyse_one)
                 else:
                     continue
                 done[index] = outcome
                 worker.index = None
-                _assign(worker, queue, paths, sizes)
+                workers[slot] = _assign(worker, analyse_one, queue, paths, sizes)
             while following in done:
                 yield done.pop(following)
                 following += 1
@@ -86,6 +87,11 @@ def analyse(paths: list[Path], analyse_one: Analyse) -> Iterator[report.Analysis
             worker.process.kill()
             worker.process.join()
             worker.connection.close()
+
+
+def _worker_count() -> int:
+    count = os.cpu_count() or 1
+    return min(count, WINDOWS_WAIT_LIMIT) if sys.platform == "win32" else count
 
 
 def _size(path: Path) -> int:
@@ -110,31 +116,61 @@ def _replace(worker: _Worker, analyse_one: Analyse) -> _Worker:
     return _start(analyse_one)
 
 
-def _assign(worker: _Worker, queue: Iterator[int], paths: list[Path], sizes: list[int]) -> None:
+def _assign(
+    worker: _Worker,
+    analyse_one: Analyse,
+    queue: Iterator[int],
+    paths: list[Path],
+    sizes: list[int],
+) -> _Worker:
     index = next(queue, None)
     if index is None:
-        return
+        return worker
+    seconds = TIME_BASE + TIME_PER_BYTE * sizes[index]
+    task = (paths[index], MEMORY_BASE + MEMORY_PER_BYTE * sizes[index], seconds)
+    try:
+        worker.connection.send(task)
+    except OSError:
+        worker = _replace(worker, analyse_one)
+        worker.connection.send(task)
     worker.index = index
-    worker.seconds = TIME_BASE + TIME_PER_BYTE * sizes[index]
-    worker.deadline = time.monotonic() + worker.seconds
-    worker.connection.send((paths[index], MEMORY_BASE + MEMORY_PER_BYTE * sizes[index]))
+    worker.seconds = seconds
+    worker.deadline = time.monotonic() + seconds
+    return worker
 
 
 def _work(connection: Connection, analyse_one: Analyse) -> None:
+    parent = multiprocessing.parent_process()
+    watched: list[Connection | int] = [connection]
+    if parent is not None:
+        watched.append(parent.sentinel)
     while True:
+        if connection not in wait(watched):
+            return
         try:
             task = connection.recv()
         except EOFError:
             return
         if task is None:
             return
-        path, budget = task
+        path, budget, seconds = task
         _limit_memory(budget)
+        _limit_time(math.ceil(seconds) + 1)
         try:
             outcome: object = analyse_one(path)
         except Exception as exc:
             outcome = exc
+        _limit_time(0)
         connection.send(outcome)
+
+
+# The parent enforces the deadline. This alarm only ends a worker whose parent is gone,
+# and Windows has no alarm.
+def _limit_time(seconds: int) -> None:
+    if sys.platform != "win32":
+        import signal
+
+        signal.alarm(seconds)
 
 
 # The budget sits on top of what the worker already holds. Linux counts address space,

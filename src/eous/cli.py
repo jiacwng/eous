@@ -260,7 +260,7 @@ def _as_digest(text: str) -> tuple[str | None, int]:
             return (None, USAGE)
         return (text, OK)
 
-    result = report.analyse(path)
+    [result] = _analyse([path])
     if result.refusal is not None:
         _warn(_refusal_line(result.path, result.refusal))
         return (None, REFUSED)

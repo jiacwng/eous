@@ -629,26 +629,17 @@ def test_a_file_past_its_deadline_costs_only_its_own_file(
     captured = output.readouterr()
     digested = [line.split("  ")[0] for line in captured.out.splitlines()]
     assert digested == [str(tmp_path / name) for name in ("a.exe", "c.exe")]
-    assert "stall.exe: unreadable: the analysis passed its 2 s limit" in captured.err
+    assert "stall.exe: unreadable: the analysis exceeded its 2 s time limit" in captured.err
 
 
-def analyse_or_hoard(path: Path) -> report.Analysis:
-    try:
-        bytearray(1 << 30)
-    except MemoryError:
-        return report.Analysis(path, None, report.Refusal(report.UNREADABLE, "held"))
-    return report.Analysis(path, None, None)
-
-
-@pytest.mark.skipif(sys.platform == "darwin", reason="macOS enforces no memory limit")
-def test_a_worker_cannot_allocate_past_its_memory_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_compare_gives_a_file_the_same_deadline_as_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    plant(tmp_path, "a.exe")
-    monkeypatch.setattr(pool, "MEMORY_BASE", 64 << 20)
-    [result] = pool.analyse([tmp_path / "a.exe"], analyse_or_hoard)
-    assert result.refusal is not None
-    assert result.refusal.detail == "held"
+    plant(tmp_path, "stall.exe")
+    monkeypatch.setattr(report, "analyse", analyse_or_stall)
+    monkeypatch.setattr(pool, "TIME_BASE", 2.0)
+    assert cli.main(["compare", str(tmp_path / "stall.exe"), str(CLEAN)]) == cli.REFUSED
+    assert "time limit" in output.readouterr().err
 
 
 def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:

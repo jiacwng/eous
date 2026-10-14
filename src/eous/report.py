@@ -45,7 +45,7 @@ def crashed(path: Path) -> Analysis:
 
 
 def overran(path: Path, seconds: float) -> Analysis:
-    return _refuse(path, UNREADABLE, f"the analysis passed its {seconds:.0f} s limit")
+    return _refuse(path, UNREADABLE, f"the analysis exceeded its {seconds:.0f} s time limit")
 
 
 def _analyse(path: Path) -> Analysis:
