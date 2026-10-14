@@ -4,16 +4,14 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable
-from concurrent.futures import Future
-from concurrent.futures.process import BrokenProcessPool
+import time
 from functools import cache
 from pathlib import Path
 
 import pytest
 
 from conftest import ELF64, FIXTURES, JUNK, MACHO, PE32, PE64
-from eous import cli, report
+from eous import cli, pool, report
 
 CLEAN = PE64
 
@@ -535,17 +533,26 @@ def test_the_exit_codes_are_distinct() -> None:
     assert (cli.OK, cli.REFUSED, cli.USAGE, cli.INTERNAL) == (0, 1, 2, 3)
 
 
+def explode(path: Path) -> object:
+    raise RuntimeError("something gave way")
+
+
 # An unexpected failure exits 3 and says so, which keeps a bug distinguishable from a
 # refusal the tool made deliberately.
 def test_an_unexpected_failure_exits_three(
     monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    def explode(path: Path) -> object:
-        raise RuntimeError("something gave way")
-
     monkeypatch.setattr(cli.report, "analyse", explode)
     assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
     assert "something gave way" in output.readouterr().err
+
+
+HOSTILE_SECTION = ".text\x1b[2K\reous: /bin/ls: unreadable: no recognised container\neous: trusted"
+
+
+def hostile_refusal(path: Path) -> report.Analysis:
+    detail = f"executable section {HOSTILE_SECTION} is writable"
+    return report.Analysis(path=path, digest=None, refusal=report.Refusal(report.PACKED, detail))
 
 
 # A section name is attacker-controlled. A newline in one would forge a second refusal line
@@ -553,16 +560,7 @@ def test_an_unexpected_failure_exits_three(
 def test_a_section_name_cannot_forge_a_refusal_line(
     monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    hostile = ".text\x1b[2K\reous: /bin/ls: unreadable: no recognised container\neous: trusted"
-    monkeypatch.setattr(
-        cli.report,
-        "analyse",
-        lambda path: report.Analysis(
-            path=Path(path),
-            digest=None,
-            refusal=report.Refusal(report.PACKED, f"executable section {hostile} is writable"),
-        ),
-    )
+    monkeypatch.setattr(cli.report, "analyse", hostile_refusal)
     assert cli.main(["hash", str(CLEAN)]) == cli.REFUSED
 
     printed = output.readouterr().err
@@ -614,38 +612,43 @@ def test_a_worker_that_dies_costs_only_its_own_file(
     assert all("unreadable: the analysis process ended abruptly" in line for line in refused)
 
 
-class BreaksOnce:
-    broken = False
-
-    def __init__(self, max_workers: int | None = None) -> None:
-        pass
-
-    def __enter__(self) -> "BreaksOnce":
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
-
-    def map(self, function: Callable[[Path], report.Analysis], paths: list[Path]) -> object:
-        if not BreaksOnce.broken:
-            BreaksOnce.broken = True
-            raise BrokenProcessPool
-        return map(function, paths)
-
-    def submit(self, function: Callable[[Path], report.Analysis], path: Path) -> Future[object]:
-        future: Future[object] = Future()
-        future.set_result(function(path))
-        return future
+def analyse_or_stall(path: Path) -> report.Analysis:
+    if path.name.startswith("stall"):
+        time.sleep(60)
+    return ANALYSE(path)
 
 
-def test_a_pool_broken_before_any_result_still_digests_every_file(
+def test_a_file_past_its_deadline_costs_only_its_own_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    plant(tmp_path, "a.exe", "b.exe", "c.exe")
-    monkeypatch.setattr(BreaksOnce, "broken", False)
-    monkeypatch.setattr(cli, "ProcessPoolExecutor", BreaksOnce)
-    assert cli.main(["hash", str(tmp_path)]) == cli.OK
-    assert len(output.readouterr().out.splitlines()) == 3
+    plant(tmp_path, "a.exe", "stall.exe", "c.exe")
+    monkeypatch.setattr(report, "analyse", analyse_or_stall)
+    monkeypatch.setattr(pool, "TIME_BASE", 2.0)
+    assert cli.main(["hash", str(tmp_path)]) == cli.REFUSED
+
+    captured = output.readouterr()
+    digested = [line.split("  ")[0] for line in captured.out.splitlines()]
+    assert digested == [str(tmp_path / name) for name in ("a.exe", "c.exe")]
+    assert "stall.exe: unreadable: the analysis passed its 2 s limit" in captured.err
+
+
+def analyse_or_hoard(path: Path) -> report.Analysis:
+    try:
+        bytearray(1 << 30)
+    except MemoryError:
+        return report.Analysis(path, None, report.Refusal(report.UNREADABLE, "held"))
+    return report.Analysis(path, None, None)
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="macOS enforces no memory limit")
+def test_a_worker_cannot_allocate_past_its_memory_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plant(tmp_path, "a.exe")
+    monkeypatch.setattr(pool, "MEMORY_BASE", 64 << 20)
+    [result] = pool.analyse([tmp_path / "a.exe"], analyse_or_hoard)
+    assert result.refusal is not None
+    assert result.refusal.detail == "held"
 
 
 def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:

@@ -44,6 +44,10 @@ def crashed(path: Path) -> Analysis:
     return _refuse(path, UNREADABLE, "the analysis process ended abruptly")
 
 
+def overran(path: Path, seconds: float) -> Analysis:
+    return _refuse(path, UNREADABLE, f"the analysis passed its {seconds:.0f} s limit")
+
+
 def _analyse(path: Path) -> Analysis:
     try:
         binary = loader.load(path)
