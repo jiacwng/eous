@@ -126,7 +126,7 @@ def test_a_pe_whose_sections_claim_the_file_many_times_is_refused_before_lief(
         loader.load(target)
 
 
-@pytest.mark.parametrize("cut", [0x3C, 0x50, 0x100])
+@pytest.mark.parametrize("cut", [0x3C, 0x50, 0x100, 0x180 + 40 * 2 + 10])
 def test_a_truncated_pe_header_is_left_to_lief(cut: int) -> None:
     claims = pe_with_every_section_claiming_the_file()
     loader._check_pe_sections(PE64.read_bytes()[:cut])

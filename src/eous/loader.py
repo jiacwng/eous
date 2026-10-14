@@ -29,7 +29,7 @@ BITS = {"x86": 32, "x86-64": 64}
 
 ENTROPY_CHUNK = 1 << 20
 
-SECTION_DATA_LIMIT = 2
+SECTION_DATA_RATIO = 2
 
 
 class LoaderError(Exception):
@@ -216,7 +216,7 @@ def _check_pe_sections(raw: bytes) -> None:
     for entry in range(table, end - 39, 40):
         raw_size, pointer = struct.unpack_from("<II", raw, entry + 16)
         claimed += min(raw_size, max(0, len(raw) - pointer))
-    if claimed > SECTION_DATA_LIMIT * len(raw):
+    if claimed > SECTION_DATA_RATIO * len(raw):
         raise LoaderError(
             f"sections overlap, {claimed} bytes of section data in a {len(raw)} byte file"
         )
