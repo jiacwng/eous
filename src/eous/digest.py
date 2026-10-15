@@ -132,6 +132,7 @@ def _containment(
     if smaller == 0 or larger > smaller * MAX_CONTAINMENT_RATIO:
         return (None, None, None, None)
 
+    jaccard = min(jaccard, smaller / larger)
     shared = jaccard * (left + right) / (1 + jaccard)
     spread = error * (left + right) / (1 + jaccard) ** 2
     return (

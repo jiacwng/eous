@@ -19,6 +19,7 @@ OK = 0
 REFUSED = 1
 USAGE = 2
 INTERNAL = 3
+DIFFERS = 4
 
 # Windows reports a write to a closed pipe as EINVAL where POSIX raises EPIPE.
 CLOSED_PIPE = (errno.EPIPE, errno.EINVAL) if sys.platform == "win32" else (errno.EPIPE,)
@@ -48,6 +49,7 @@ exit codes:
   1  at least one file refused, with the cause on stderr
   2  usage error
   3  internal error
+  4  verify found the two binaries differ
 
 examples:
   eous hash program.exe
@@ -58,6 +60,7 @@ examples:
   eous match suspect.exe digests.txt
   eous match suspect.exe digests.txt --min 80
   eous cross digests.txt --min 40
+  eous verify downloaded/curl rebuilt/curl
 
 reading a comparison:
   similarity:  36.5% +/- 4.2 (32.3% to 40.6%)
@@ -136,6 +139,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
 
+    verify_command = commands.add_parser(
+        "verify",
+        help="check a shipped binary against your own rebuild of its source",
+        description="Report whether a shipped binary holds the same code as a rebuild of "
+        "its source with the same toolchain, and how much code each holds that the other "
+        "lacks. Each input may be a file or a digest string. Builds with the same compiler, "
+        "flags and libraries give equal digests.",
+    )
+    verify_command.add_argument("shipped", nargs="?", metavar="FILE-OR-DIGEST")
+    verify_command.add_argument("rebuilt", nargs="?", metavar="FILE-OR-DIGEST")
+
     for command in (match_command, cross_command):
         command.add_argument(
             "--min",
@@ -145,7 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
             metavar="PERCENT",
             help="omit results scoring below this percentage",
         )
-    for command in (hash_command, compare_command, match_command, cross_command):
+    for command in (hash_command, compare_command, match_command, cross_command, verify_command):
         command.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
@@ -196,6 +210,8 @@ def _dispatch(args: argparse.Namespace) -> int | None:
         return _run_match(args)
     if args.command == "cross" and args.known:
         return _run_cross(args)
+    if args.command == "verify" and args.shipped and args.rebuilt:
+        return _run_verify(args)
     return None
 
 
@@ -267,15 +283,23 @@ def _as_digest(text: str) -> tuple[str | None, int]:
     return (result.digest, OK)
 
 
-def _run_compare(args: argparse.Namespace) -> int:
+def _resolve(texts: tuple[str, str]) -> tuple[list[str], list[str | None]] | int:
     resolved: list[str] = []
     named: list[str | None] = []
-    for text in (args.left, args.right):
+    for text in texts:
         found, code = _as_digest(text)
         if found is None:
             return code
         resolved.append(found)
         named.append(None if found is text else text)
+    return resolved, named
+
+
+def _run_compare(args: argparse.Namespace) -> int:
+    found = _resolve((args.left, args.right))
+    if isinstance(found, int):
+        return found
+    resolved, named = found
 
     try:
         scores = digest.compare(resolved[0], resolved[1])
@@ -298,6 +322,58 @@ def _run_compare(args: argparse.Namespace) -> int:
         labels = [name or side for name, side in zip(named, ("left", "right"), strict=True)]
         _print_scores(scores, labels)
     return OK
+
+
+def _run_verify(args: argparse.Namespace) -> int:
+    found = _resolve((args.shipped, args.rebuilt))
+    if isinstance(found, int):
+        return found
+    resolved, named = found
+
+    try:
+        scores = digest.compare(resolved[0], resolved[1])
+    except digest.DigestError as exc:
+        _warn(str(exc))
+        return USAGE
+
+    shipped, rebuilt = (digest.parse(text) for text in resolved)
+    same = shipped == rebuilt
+    extra = _extra(scores.left_in_right), _extra(scores.right_in_left)
+    margins = scores.left_in_right_uncertainty, scores.right_in_left_uncertainty
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "meta": _meta(),
+                    "target": shipped.target,
+                    "shipped": named[0],
+                    "rebuilt": named[1],
+                    "same": same,
+                    "shipped_cardinality": shipped.cardinality,
+                    "rebuilt_cardinality": rebuilt.cardinality,
+                    "shipped_not_in_rebuilt": extra[0],
+                    "rebuilt_not_in_shipped": extra[1],
+                    "shipped_not_in_rebuilt_uncertainty": margins[0],
+                    "rebuilt_not_in_shipped_uncertainty": margins[1],
+                },
+                indent=1,
+            )
+        )
+    else:
+        print(f"verdict:     {'no difference found' if same else 'differs'}")
+        print(f"cardinality: shipped {shipped.cardinality}, rebuilt {rebuilt.cardinality}")
+        if extra[0] is None or extra[1] is None:
+            ratio = f"{digest.MAX_CONTAINMENT_RATIO:g}x"
+            print(f"extra code:  n/a (cardinalities differ by more than {ratio}, or one is 0)")
+        else:
+            print(f"extra code:  shipped {extra[0]:>5.1f}% +/- {margins[0]:.1f} not in rebuilt")
+            print(f"             rebuilt {extra[1]:>5.1f}% +/- {margins[1]:.1f} not in shipped")
+    return OK if same else DIFFERS
+
+
+def _extra(contained: float | None) -> float | None:
+    return None if contained is None else round(100 - contained, 4)
 
 
 def _read_digests(path: Path) -> tuple[list[str], list[digest.Sketch], int] | None:

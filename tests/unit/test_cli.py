@@ -529,8 +529,8 @@ def test_digest_inputs_are_labelled_left_and_right(output: pytest.CaptureFixture
 
 
 def test_the_exit_codes_are_distinct() -> None:
-    assert len({cli.OK, cli.REFUSED, cli.USAGE, cli.INTERNAL}) == 4
-    assert (cli.OK, cli.REFUSED, cli.USAGE, cli.INTERNAL) == (0, 1, 2, 3)
+    codes = (cli.OK, cli.REFUSED, cli.USAGE, cli.INTERNAL, cli.DIFFERS)
+    assert codes == (0, 1, 2, 3, 4)
 
 
 def explode(path: Path) -> object:
@@ -979,3 +979,82 @@ def test_cross_and_match_agree_on_every_pair(
             pair = (name, row["label"])
             if pair in from_cross:
                 assert from_cross[pair] == pytest.approx(row["similarity"])
+
+
+def with_cardinality(text: str, cardinality: int) -> str:
+    version, target, _, body = text.split(":")
+    return f"{version}:{target}:{cardinality}:{body}"
+
+
+def test_verify_finds_a_file_the_same_as_its_digest(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["verify", str(CLEAN), digest_of(CLEAN)]) == cli.OK
+    out = output.readouterr().out
+    assert "verdict:     no difference found" in out
+    assert "shipped   0.0% +/- 0.3 not in rebuilt" in out
+
+
+def test_verify_reports_differing_slots(output: pytest.CaptureFixture[str]) -> None:
+    text = digest_of(CLEAN)
+    assert cli.main(["verify", weaker(text), text]) == cli.DIFFERS
+    assert "verdict:     differs" in output.readouterr().out
+
+
+def test_verify_reports_a_cardinality_change_alone(output: pytest.CaptureFixture[str]) -> None:
+    text = digest_of(CLEAN)
+    cardinality = int(text.split(":")[2])
+    shipped = with_cardinality(text, cardinality + 1)
+    assert cli.main(["verify", shipped, text]) == cli.DIFFERS
+    out = output.readouterr().out
+    assert "verdict:     differs" in out
+    assert f"shipped {cardinality + 1}, rebuilt {cardinality}" in out
+
+    cli.main(["verify", "--json", shipped, text])
+    assert json.loads(output.readouterr().out)["shipped_not_in_rebuilt"] > 0
+
+
+def test_verify_withholds_extra_code_past_the_size_ratio(
+    output: pytest.CaptureFixture[str],
+) -> None:
+    body = "0" * 128
+    shipped, rebuilt = f"EO1:pe64:1000:{body}", f"EO1:pe64:10:{body}"
+    assert cli.main(["verify", shipped, rebuilt]) == cli.DIFFERS
+    assert "n/a" in output.readouterr().out
+
+    cli.main(["verify", "--json", shipped, rebuilt])
+    payload = json.loads(output.readouterr().out)
+    assert payload["shipped_not_in_rebuilt"] is None
+    assert payload["rebuilt_not_in_shipped_uncertainty"] is None
+
+
+def test_verify_json_names_both_directions(output: pytest.CaptureFixture[str]) -> None:
+    text = digest_of(CLEAN)
+    cardinality = int(text.split(":")[2])
+    shipped = with_cardinality(text, cardinality * 2)
+    assert cli.main(["verify", "--json", shipped, text]) == cli.DIFFERS
+    payload = json.loads(output.readouterr().out)
+    assert payload["same"] is False
+    assert payload["shipped_cardinality"] == cardinality * 2
+    assert payload["shipped_not_in_rebuilt"] == pytest.approx(50.0)
+    assert payload["rebuilt_not_in_shipped"] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("args", "code"),
+    [
+        (["verify", str(CLEAN)], cli.USAGE),
+        (["verify", str(CLEAN), str(ELF64)], cli.USAGE),
+        (["verify", "no/such/file.exe", str(CLEAN)], cli.USAGE),
+    ],
+    ids=["one_input", "other_target", "absent_file"],
+)
+def test_verify_rejects_what_it_cannot_score(
+    args: list[str], code: int, output: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(args) == code
+
+
+def test_verify_stops_at_a_refused_file(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
+    target = tmp_path / "thing.macho"
+    target.write_bytes(MACHO)
+    assert cli.main(["verify", str(target), str(CLEAN)]) == cli.REFUSED
+    assert output.readouterr().out == ""
