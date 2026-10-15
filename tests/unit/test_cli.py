@@ -621,15 +621,17 @@ def analyse_or_stall(path: Path) -> report.Analysis:
 def test_a_file_past_its_deadline_costs_only_its_own_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    plant(tmp_path, "a.exe", "stall.exe", "c.exe")
+    plant(tmp_path, "stall.exe", "t.exe", "u.exe")
     monkeypatch.setattr(report, "analyse", analyse_or_stall)
     monkeypatch.setattr(pool, "TIME_BASE", 2.0)
-    assert cli.main(["hash", str(tmp_path)]) == cli.REFUSED
+    assert cli.main(["hash", "--json", str(tmp_path)]) == cli.REFUSED
 
-    captured = output.readouterr()
-    digested = [line.split("  ")[0] for line in captured.out.splitlines()]
-    assert digested == [str(tmp_path / name) for name in ("a.exe", "c.exe")]
-    assert "stall.exe: unreadable: the analysis exceeded its 2 s time limit" in captured.err
+    results = json.loads(output.readouterr().out)["results"]
+    assert [row["path"] for row in results] == [
+        str(tmp_path / name) for name in ("stall.exe", "t.exe", "u.exe")
+    ]
+    assert results[0]["detail"] == "the analysis exceeded its 2 s time limit"
+    assert all(row["digest"] for row in results[1:])
 
 
 def test_compare_gives_a_file_the_same_deadline_as_hash(

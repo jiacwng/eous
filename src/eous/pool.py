@@ -7,6 +7,7 @@ import contextlib
 import math
 import multiprocessing
 import os
+import signal
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -140,6 +141,7 @@ def _assign(
 
 
 def _work(connection: Connection, analyse_one: Analyse) -> None:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     parent = multiprocessing.parent_process()
     watched: list[Connection | int] = [connection]
     if parent is not None:
