@@ -79,6 +79,11 @@ select = ["E", "W", "F", "I", "UP", "B", "S"]
 files = ["src"]
 strict = true
 
+[tool.coverage.run]
+concurrency = ["multiprocessing"]
+parallel = true
+source = ["eous"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=eous --cov-report=term-missing --cov-fail-under=90"

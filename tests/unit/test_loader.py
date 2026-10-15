@@ -119,9 +119,9 @@ def test_a_pe_whose_sections_claim_the_file_many_times_is_refused_before_lief(
     target.write_bytes(pe_with_every_section_claiming_the_file())
 
     def parse(raw: bytes) -> None:
-        raise AssertionError("lief.parse was reached")
+        raise AssertionError("LIEF was reached")
 
-    monkeypatch.setattr(loader.lief, "parse", parse)
+    monkeypatch.setattr(loader, "_parse", parse)
     with pytest.raises(LoaderError, match="sections overlap"):
         loader.load(target)
 
@@ -131,6 +131,23 @@ def test_a_truncated_pe_header_is_left_to_lief(cut: int) -> None:
     claims = pe_with_every_section_claiming_the_file()
     loader._check_pe_sections(PE64.read_bytes()[:cut])
     loader._check_pe_sections(claims[:cut])
+
+
+def test_lief_skips_the_pe_tables_eous_never_reads() -> None:
+    raw = PE64.read_bytes()
+    assert len(lief.PE.parse(raw).imports) > 0
+    parsed = loader._parse(raw)
+    assert isinstance(parsed, lief.PE.Binary)
+    assert len(parsed.imports) == 0
+    assert not parsed.has_resources
+
+
+def test_lief_skips_the_elf_symbols_eous_never_reads() -> None:
+    raw = ELF64.read_bytes()
+    assert len(lief.ELF.parse(raw).symbols) > 0
+    parsed = loader._parse(raw)
+    assert isinstance(parsed, lief.ELF.Binary)
+    assert len(parsed.symbols) == 0
 
 
 def test_a_stripped_elf_whose_segments_overlap_is_refused(tmp_path: Path) -> None:
@@ -235,7 +252,7 @@ def test_a_parser_failure_becomes_a_loader_error(
 
     target = tmp_path / "anything.bin"
     target.write_bytes(b"\x7fELF" + bytes(60))
-    monkeypatch.setattr(loader.lief, "parse", explode)
+    monkeypatch.setattr(loader, "_parse", explode)
     with pytest.raises(LoaderError, match="parser gave up"):
         loader.load(target)
 
@@ -264,7 +281,7 @@ def test_an_unrecognised_container_becomes_a_loader_error(
 ) -> None:
     target = tmp_path / "anything.bin"
     target.write_bytes(b"\x7fELF" + bytes(60))
-    monkeypatch.setattr(loader.lief, "parse", lambda _: None)
+    monkeypatch.setattr(loader, "_parse", lambda _: None)
     with pytest.raises(LoaderError, match="no recognised container"):
         loader.load(target)
 
