@@ -170,8 +170,6 @@ def _work(connection: Connection, analyse_one: Analyse) -> None:
 # and Windows has no alarm.
 def _limit_time(seconds: int) -> None:
     if sys.platform != "win32":
-        import signal
-
         signal.alarm(seconds)
 
 

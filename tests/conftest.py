@@ -4,7 +4,6 @@ import struct
 from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bin"
-NAMES = ["fixture-pe-x64.exe", "fixture-pe-x86.exe", "fixture-elf-x64", "fixture-elf-x86"]
 PE64 = FIXTURES / "fixture-pe-x64.exe"
 PE32 = FIXTURES / "fixture-pe-x86.exe"
 ELF64 = FIXTURES / "fixture-elf-x64"

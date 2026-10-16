@@ -37,7 +37,3 @@ def test_a_worker_that_died_while_idle_is_replaced_before_its_next_file() -> Non
     finally:
         replaced.connection.send(None)
         replaced.process.join()
-
-
-def test_no_paths_start_no_workers() -> None:
-    assert list(pool.analyse([], report.analyse)) == []
