@@ -428,6 +428,14 @@ def test_the_directions_swap_with_the_arguments() -> None:
     assert forward.left_in_right_uncertainty == pytest.approx(backward.right_in_left_uncertainty)
 
 
+def test_containment_respects_the_cardinality_ratio_when_every_slot_agrees() -> None:
+    small = digest.Sketch("pe64", 100, 0)
+    large = digest.Sketch("pe64", 200, 0)
+    scores = digest.compare(large, small)
+    assert scores.left_in_right == pytest.approx(50.0)
+    assert scores.right_in_left == pytest.approx(100.0)
+
+
 def test_containment_carries_a_margin_of_error_whenever_it_is_reported() -> None:
     text = reference.digest((tuple(varied(400, seed=88)),), "pe64")
     assert text is not None
