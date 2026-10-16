@@ -65,7 +65,10 @@ def _analyse(path: Path) -> Analysis:
         return _refuse(path, NO_CODE, "no executable section")
 
     if binary.format == "pe":
-        writable = next((section.name for section in binary.sections if section.writable), None)
+        writable = next(
+            (section.name for section in binary.sections if section.writable and section.data),
+            None,
+        )
         if writable is not None:
             return _refuse(path, PACKED, f"executable section {writable} is writable")
 

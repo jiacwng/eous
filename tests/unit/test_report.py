@@ -84,6 +84,18 @@ def test_a_writable_executable_section_refuses_as_packed(
     assert "writable" in result.refusal.detail
 
 
+def test_an_empty_writable_executable_section_keeps_the_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = loader.load(PE64)
+    reserved = loader.Section(name=".textbss", virtual_address=0x1000, writable=True, data=b"")
+    pose(monkeypatch, replace(source, sections=(reserved, *source.sections)))
+
+    result = report.analyse(PE64)
+    assert result.refusal is None
+    assert result.digest is not None
+
+
 def test_a_writable_executable_segment_keeps_an_elf_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
