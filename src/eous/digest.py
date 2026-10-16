@@ -43,13 +43,6 @@ class Scores:
     uncertainty: float
     left_in_right: float | None
     right_in_left: float | None
-    left_in_right_uncertainty: float | None
-    right_in_left_uncertainty: float | None
-
-
-def _check_target(target: str) -> None:
-    if target not in TARGETS:
-        raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
 
 
 def parse(text: str) -> Sketch:
@@ -60,7 +53,8 @@ def parse(text: str) -> Sketch:
     version, target, cardinality, body = fields
     if version != VERSION:
         raise DigestError(f"expected version {VERSION}, found {version!r}")
-    _check_target(target)
+    if target not in TARGETS:
+        raise DigestError(f"unsupported target {target!r}, expected one of: {', '.join(TARGETS)}")
     if not (cardinality.isascii() and cardinality.isdigit()):
         raise DigestError(f"cardinality {cardinality!r} is a non-negative integer")
     if len(cardinality) > len(str(MAX_CARDINALITY)) or int(cardinality) > MAX_CARDINALITY:
@@ -101,43 +95,21 @@ def _wilson_margin(agreed: numpy.ndarray) -> numpy.ndarray:
     return margin
 
 
-def compare(left: Sketch | str, right: Sketch | str) -> Scores:
-    first = parse(left) if isinstance(left, str) else left
-    second = parse(right) if isinstance(right, str) else right
+def compare(left: Sketch, right: Sketch) -> Scores:
+    if left.target != right.target:
+        raise DigestError(f"different targets: {left.target} and {right.target}")
 
-    if first.target != second.target:
-        raise DigestError(f"different targets: {first.target} and {second.target}")
-
-    similarity, uncertainty = score(unpack(first).reshape(1, -1), unpack(second))
-    overlap = float(similarity[0]) / 100
-    spread = float(uncertainty[0])
-
-    left_in_right, right_in_left, left_error, right_error = _containment(
-        overlap, spread / 100, first.cardinality, second.cardinality
-    )
-    return Scores(
-        similarity=overlap * 100,
-        uncertainty=spread,
-        left_in_right=left_in_right,
-        right_in_left=right_in_left,
-        left_in_right_uncertainty=left_error,
-        right_in_left_uncertainty=right_error,
-    )
+    similarity, uncertainty = score(unpack(left).reshape(1, -1), unpack(right))
+    overlap = float(similarity[0])
+    left_in_right, right_in_left = _containment(overlap / 100, left.cardinality, right.cardinality)
+    return Scores(overlap, float(uncertainty[0]), left_in_right, right_in_left)
 
 
-def _containment(
-    jaccard: float, error: float, left: int, right: int
-) -> tuple[float | None, float | None, float | None, float | None]:
+def _containment(jaccard: float, left: int, right: int) -> tuple[float | None, float | None]:
     smaller, larger = sorted((left, right))
     if smaller == 0 or larger > smaller * MAX_CONTAINMENT_RATIO:
-        return (None, None, None, None)
+        return (None, None)
 
     jaccard = min(jaccard, smaller / larger)
     shared = jaccard * (left + right) / (1 + jaccard)
-    spread = error * (left + right) / (1 + jaccard) ** 2
-    return (
-        min(1.0, shared / left) * 100,
-        min(1.0, shared / right) * 100,
-        min(100.0, spread / left * 100),
-        min(100.0, spread / right * 100),
-    )
+    return (min(1.0, shared / left) * 100, min(1.0, shared / right) * 100)

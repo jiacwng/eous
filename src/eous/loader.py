@@ -131,6 +131,13 @@ def load(path: Path) -> Binary:
     except OSError as exc:
         raise LoaderError(f"cannot read: {exc.strerror}") from exc
 
+    if raw[:2] != b"MZ" and raw[:4] != b"\x7fELF":
+        if lief.is_macho(list(raw[:32])):
+            raise UnsupportedFormatError("macho")
+        if lief.is_coff(path):
+            raise UnsupportedFormatError("coff")
+        raise LoaderError("no recognised container")
+
     _check_pe_sections(raw)
     try:
         parsed = _parse(raw)
@@ -139,22 +146,15 @@ def load(path: Path) -> Binary:
 
     if parsed is None:
         raise LoaderError("no recognised container")
-
     if isinstance(parsed, lief.PE.Binary):
         return _load_pe(parsed, len(raw))
-    if isinstance(parsed, lief.ELF.Binary):
-        return _load_elf(parsed, len(raw))
-
-    family = type(parsed).__module__.rsplit(".", 1)[-1].lower()
-    raise UnsupportedFormatError(family)
+    return _load_elf(parsed, len(raw))
 
 
-def _parse(raw: bytes) -> object:
+def _parse(raw: bytes) -> lief.PE.Binary | lief.ELF.Binary | None:
     if raw[:2] == b"MZ":
         return lief.PE.parse(raw, PE_CONFIG)
-    if raw[:4] == b"\x7fELF":
-        return lief.ELF.parse(raw, ELF_CONFIG)
-    return lief.parse(raw)
+    return lief.ELF.parse(raw, ELF_CONFIG)
 
 
 def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:

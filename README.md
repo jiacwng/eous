@@ -38,9 +38,9 @@ withheld beyond a 4x size difference:
 
 ```
 $ eous compare rg-14.0.0.exe rg-14.0.1.exe
-similarity:  95.8% +/- 1.4 (94.4% to 97.3%)
-containment: rg-14.0.0.exe in rg-14.0.1.exe   97.8% +/- 1
-             rg-14.0.1.exe in rg-14.0.0.exe   97.9% +/- 1
+similarity:  95.8% +/- 1.4
+containment: rg-14.0.0.exe in rg-14.0.1.exe   97.8%
+             rg-14.0.1.exe in rg-14.0.0.exe   97.9%
 ```
 
 **Match** one input against a collection, best first:

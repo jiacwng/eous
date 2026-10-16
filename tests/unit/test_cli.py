@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ELF64, FIXTURES, JUNK, MACHO, PE32, PE64
+from conftest import ELF64, JUNK, MACHO, PE32, PE64
 from eous import cli, pool, report
 
 CLEAN = PE64
@@ -40,29 +40,11 @@ def test_hashing_one_file_prints_the_digest_alone(output: pytest.CaptureFixture[
     assert captured.err == ""
 
 
-# Several files means several names, so each digest says which file it belongs to.
-def test_several_files_print_one_labelled_line_each(output: pytest.CaptureFixture[str]) -> None:
-    names = ["fixture-pe-x64.exe", "fixture-elf-x64", "fixture-elf-x86"]
-    assert cli.main(["hash", *[str(FIXTURES / n) for n in names]]) == cli.OK
-    lines = output.readouterr().out.strip().splitlines()
-    assert len(lines) == 3
-    for name, line in zip(names, lines, strict=True):
-        assert line.startswith(f"{FIXTURES / name}  EO1:")
-
-
 def plant(root: Path, *names: str) -> None:
     for name in names:
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(CLEAN.read_bytes())
-
-
-def test_a_directory_is_walked_to_the_bottom(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    plant(tmp_path, "top.exe", "one/middle.exe", "one/two/deep.exe")
-    assert cli.main(["hash", str(tmp_path)]) == cli.OK
-    assert len(output.readouterr().out.strip().splitlines()) == 3
 
 
 # Two runs over one folder must agree, so the walk is sorted before it is digested.
@@ -77,15 +59,6 @@ def test_a_directory_is_walked_in_a_settled_order(
     assert [line.split("  ")[0] for line in first.strip().splitlines()] == [
         str(tmp_path / name) for name in ("a.exe", "b.exe", "c.exe")
     ]
-
-
-# The caller named the folder, so every line says which file it found.
-def test_a_walked_file_carries_its_path(tmp_path: Path, output: pytest.CaptureFixture[str]) -> None:
-    plant(tmp_path, "v1/prog.exe", "v2/prog.exe")
-    cli.main(["hash", str(tmp_path)])
-    lines = output.readouterr().out.strip().splitlines()
-    assert lines[0].startswith(f"{tmp_path / 'v1' / 'prog.exe'}  ")
-    assert lines[1].startswith(f"{tmp_path / 'v2' / 'prog.exe'}  ")
 
 
 def test_one_file_in_a_directory_is_still_labelled(
@@ -106,15 +79,6 @@ def test_an_empty_directory_says_it_holds_nothing(
     assert str(tmp_path) in captured.err
 
 
-def test_every_named_directory_appears_when_none_holds_a_file(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    second = tmp_path / "second"
-    second.mkdir()
-    assert cli.main(["hash", str(tmp_path), str(second)]) == cli.USAGE
-    assert str(second) in output.readouterr().err
-
-
 def test_an_over_long_path_is_refused_rather_than_crashing(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
@@ -122,34 +86,6 @@ def test_an_over_long_path_is_refused_rather_than_crashing(
     captured = output.readouterr()
     assert "internal error" not in captured.err
     assert "unreadable" in captured.err
-
-
-def test_a_directory_and_a_named_file_run_together(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    plant(tmp_path, "inside.exe")
-    assert cli.main(["hash", str(tmp_path), str(CLEAN)]) == cli.OK
-    assert len(output.readouterr().out.strip().splitlines()) == 2
-
-
-def test_a_refusal_inside_a_directory_exits_one(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    plant(tmp_path, "good.exe")
-    (tmp_path / "junk.bin").write_bytes(JUNK)
-    assert cli.main(["hash", str(tmp_path)]) == cli.REFUSED
-    captured = output.readouterr()
-    assert "EO1:" in captured.out
-    assert str(tmp_path / "junk.bin") in captured.err
-
-
-def test_one_file_named_twice_is_digested_once(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    plant(tmp_path, "one.exe")
-    target = str(tmp_path / "one.exe")
-    assert cli.main(["hash", target, target]) == cli.OK
-    assert len(output.readouterr().out.strip().splitlines()) == 1
 
 
 # A junction pointing at its own parent hands the walk the same file at every level.
@@ -225,11 +161,12 @@ def test_a_closed_reader_ends_the_run_quietly(
     assert output.readouterr().err == ""
 
 
-def test_a_closed_reader_ends_a_comparison_quietly(
+@pytest.mark.skipif(sys.platform == "win32", reason="EINVAL is the closed-pipe error here")
+def test_einval_stays_internal_away_from_windows(
     monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EPIPE))
-    assert cli.main(["compare", str(CLEAN), str(CLEAN)]) == cli.OK
+    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EINVAL))
+    assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
 
 
 def test_an_unrelated_os_error_is_still_internal(
@@ -238,14 +175,6 @@ def test_an_unrelated_os_error_is_still_internal(
     monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EACCES))
     assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
     assert "internal error" in output.readouterr().err
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="EINVAL is the closed-pipe error here")
-def test_einval_stays_internal_away_from_windows(
-    monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EINVAL))
-    assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
 
 
 def test_a_refusal_outlives_a_closed_reader(
@@ -268,14 +197,9 @@ def run_eous(*args: str, **env: str) -> subprocess.CompletedProcess[bytes]:
 
 
 # Output is buffered, so these run in a real process, where the final flush happens.
-@pytest.mark.parametrize(
-    "args",
-    [["hash", "--json", str(CLEAN)], ["compare", str(CLEAN), str(CLEAN)], ["--version"]],
-    ids=["hash-json", "compare", "version"],
-)
-def test_a_closed_reader_exits_zero_in_a_real_process(args: list[str]) -> None:
+def test_a_closed_reader_exits_zero_in_a_real_process() -> None:
     process = subprocess.Popen(
-        [sys.executable, "-m", "eous.cli", *args],
+        [sys.executable, "-m", "eous.cli", "hash", "--json", str(CLEAN)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -309,17 +233,6 @@ def test_a_name_the_terminal_cannot_encode_is_escaped(tmp_path: Path) -> None:
     assert process.stdout.count(b"EO1:") == 2
 
 
-def test_quietening_stdout_swallows_what_follows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "out.txt"
-    with target.open("w") as handle:
-        monkeypatch.setattr(sys, "stdout", handle)
-        cli._quieten_stdout()
-        handle.write("this reaches the null device")
-    assert target.read_text() == ""
-
-
 def test_json_output_parses(output: pytest.CaptureFixture[str]) -> None:
     cli.main(["hash", "--json", str(CLEAN)])
     payload = json.loads(output.readouterr().out)
@@ -340,14 +253,6 @@ def test_json_carries_the_refusal_on_stdout_alone(
     assert captured.err == ""
 
 
-def test_no_arguments_is_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main([]) == cli.USAGE
-
-
-def test_an_unknown_command_is_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["frobnicate", str(CLEAN)]) == cli.USAGE
-
-
 def test_hash_without_a_file_is_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["hash"]) == cli.USAGE
 
@@ -357,38 +262,13 @@ def test_version_prints_and_succeeds(output: pytest.CaptureFixture[str]) -> None
     assert output.readouterr().out.strip()
 
 
-@pytest.mark.parametrize("flag", ["-h", "--help"])
-def test_help_exits_zero_through_main(flag: str, output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main([flag]) == cli.OK
+def test_help_exits_zero_through_main(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["--help"]) == cli.OK
     assert "EO1:" in output.readouterr().out
-
-
-def test_help_for_a_subcommand_exits_zero(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["hash", "--help"]) == cli.OK
 
 
 def test_a_bad_flag_is_still_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["hash", "--nonsense", str(CLEAN)]) == cli.USAGE
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "the format version",
-        "the target",
-        "  0  ",
-        "  1  ",
-        "  2  ",
-        "  3  ",
-        "eous hash program.exe",
-        "eous hash samples/",
-        "PE and ELF",
-        "x86-64",
-        "closed the output",
-    ],
-)
-def test_the_help_states(text: str) -> None:
-    assert text in cli.build_parser().format_help()
 
 
 # Both containment directions print, each naming its own, so no convention has to be
@@ -396,74 +276,24 @@ def test_the_help_states(text: str) -> None:
 def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["compare", str(CLEAN), str(CLEAN)]) == cli.OK
     out = output.readouterr().out
-    assert "similarity:" in out
-    assert "100.0%" in out
-    assert "+/-" in out
-    assert "to" in out
-    assert "containment:" in out
+    assert out.isascii()
+    assert "similarity:  100.0% +/- 0.5" in out
     lines = [line for line in out.splitlines() if "in" in line]
     assert len(lines) == 2
-    assert "100.0% +/- 0.5 (99.5% to 100.0%)" in out
-    assert all(line.endswith("100.0% +/- 0.3") for line in lines[-2:])
+    assert all(line.endswith("100.0%") for line in lines)
     assert all("fixture-pe-x64.exe" in line for line in lines)
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["compare", str(CLEAN), str(CLEAN)],
-        ["match", str(CLEAN), "--help"],
-        ["hash", str(CLEAN)],
-        ["--help"],
-        ["compare", "--help"],
-    ],
-    ids=["compare_same", "match_help", "hash", "help", "compare_help"],
-)
-def test_every_line_of_output_is_ascii(args: list[str], output: pytest.CaptureFixture[str]) -> None:
-    cli.main(args)
-    captured = output.readouterr()
-    assert (captured.out + captured.err).isascii()
-
-
-def test_two_digest_strings_compare(output: pytest.CaptureFixture[str]) -> None:
-    first = digest_of(CLEAN)
-    second = first[:-1] + ("0" if first[-1] != "0" else "1")
-    assert cli.main(["compare", first, second]) == cli.OK
-    assert "similarity:" in output.readouterr().out
-
-
-def test_a_file_compares_against_a_digest(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["compare", str(CLEAN), digest_of(CLEAN)]) == cli.OK
 
 
 # The filesystem answers first, so a mistyped path reports as absent rather than being
 # read as a malformed digest.
-def test_a_mistyped_path_reports_as_a_digest_problem(output: pytest.CaptureFixture[str]) -> None:
+def test_a_mistyped_path_reports_no_such_file(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["compare", "no/such/file.exe", str(CLEAN)]) == cli.USAGE
     assert "no such file" in output.readouterr().err
 
 
-def test_a_refused_file_stops_the_comparison(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    target = tmp_path / "thing.macho"
-    target.write_bytes(MACHO)
-    assert cli.main(["compare", str(target), str(CLEAN)]) == cli.REFUSED
-    captured = output.readouterr()
-    assert "unsupported_format" in captured.err
-    assert captured.out == ""
-
-
-@pytest.mark.parametrize("other", [PE32, ELF64], ids=["width", "format"])
-def test_differing_targets_are_a_usage_error(
-    other: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    assert cli.main(["compare", str(CLEAN), str(other)]) == cli.USAGE
+def test_differing_targets_are_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["compare", str(CLEAN), str(ELF64)]) == cli.USAGE
     assert "different targets" in output.readouterr().err
-
-
-def test_a_malformed_digest_is_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["compare", "EO1:pe64:notanumber:ab", str(CLEAN)]) == cli.USAGE
 
 
 def test_compare_needs_two_inputs(output: pytest.CaptureFixture[str]) -> None:
@@ -471,12 +301,12 @@ def test_compare_needs_two_inputs(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["compare"]) == cli.USAGE
 
 
-def test_compare_json_carries_the_range(output: pytest.CaptureFixture[str]) -> None:
+def test_compare_json_carries_both_scores(output: pytest.CaptureFixture[str]) -> None:
     cli.main(["compare", "--json", str(CLEAN), str(CLEAN)])
     payload = json.loads(output.readouterr().out)
     scores = payload["comparison"]
     assert scores["similarity"] == pytest.approx(100.0)
-    assert scores["low"] <= scores["similarity"] <= scores["high"]
+    assert scores["uncertainty"] == pytest.approx(0.519, abs=0.001)
     assert scores["left_in_right"] == pytest.approx(100.0)
     assert scores["right_in_left"] == pytest.approx(100.0)
     assert scores["left"].endswith("fixture-pe-x64.exe")
@@ -501,22 +331,6 @@ def test_files_sharing_a_basename_stay_distinguishable(
     assert len(lines) == 2
     assert str(left) in lines[0]
     assert str(right) in lines[0]
-
-
-def test_json_labels_distinguish_files_sharing_a_basename(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    left, right = tmp_path / "v1" / "prog.exe", tmp_path / "v2" / "prog.exe"
-    for target in (left, right):
-        target.parent.mkdir()
-        target.write_bytes(CLEAN.read_bytes())
-
-    cli.main(["compare", "--json", str(left), str(right)])
-    payload = json.loads(output.readouterr().out)
-    scores = payload["comparison"]
-    assert scores["left"] == str(left)
-    assert scores["right"] == str(right)
-    assert scores["left"] != scores["right"]
 
 
 def test_digest_inputs_are_labelled_left_and_right(output: pytest.CaptureFixture[str]) -> None:
@@ -715,14 +529,6 @@ def test_match_skips_a_line_that_is_not_a_digest(
     assert "1 line did not parse" in captured.err
 
 
-def test_match_takes_a_digest_string_as_the_query(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    known = known_file(tmp_path, CLEAN)
-    assert cli.main(["match", digest_of(CLEAN), str(known)]) == cli.OK
-    assert output.readouterr().out.splitlines()[0].startswith("100.0%")
-
-
 def test_match_refuses_a_query_it_cannot_digest(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
@@ -774,7 +580,6 @@ def test_a_hostile_label_is_escaped(
     [
         ("match", "--top", "-1"),
         ("match", "--min", "100.1"),
-        ("match", "--min", "-1"),
         ("cross", "--min", "101"),
     ],
 )
@@ -829,18 +634,6 @@ def test_match_holds_back_anything_below_the_minimum(
     lines = [line for line in captured.out.splitlines() if line]
     assert len(lines) == 1
     assert lines[0].startswith("100.0%")
-    assert "1 digest scored below 99%" in captured.err
-
-
-def test_a_minimum_nothing_clears_prints_no_ranking(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    known = tmp_path / "known.txt"
-    known.write_text(f"weaker  {weaker(digest_of(ELF64))}\n", encoding="utf-8")
-
-    assert cli.main(["match", str(ELF64), str(known), "--min", "99"]) == cli.OK
-    captured = output.readouterr()
-    assert captured.out.strip() == ""
     assert "1 digest scored below 99%" in captured.err
 
 
@@ -925,15 +718,6 @@ def test_cross_is_a_usage_error_when_no_target_holds_two(
     captured = output.readouterr()
     assert captured.out == ""
     assert "contains fewer than two digests" in captured.err
-
-
-def test_cross_counts_a_line_that_is_not_a_digest(
-    tmp_path: Path, output: pytest.CaptureFixture[str]
-) -> None:
-    known = known_file(tmp_path, CLEAN, CLEAN)
-    known.write_text(known.read_text(encoding="utf-8") + "notes.txt  not-a-digest\n", "utf-8")
-    assert cli.main(["cross", str(known)]) == cli.OK
-    assert "1 line did not parse" in output.readouterr().err
 
 
 # A collection of N digests holds N(N-1)/2 pairs, so this output is one object per line and

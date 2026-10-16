@@ -60,18 +60,15 @@ examples:
   eous cross digests.txt --min 40
 
 reading a comparison:
-  similarity:  36.5% +/- 4.2 (32.3% to 40.6%)
-  containment: old.exe in new.exe   96.0% +/- 8.0
-               new.exe in old.exe   37.0% +/- 3.1
+  similarity:  36.5% +/- 4.2
+  containment: old.exe in new.exe   96.0%
+               new.exe in old.exe   37.0%
 
   The +/- figure is the margin of error, since 256 slots estimate the overlap.
-  It narrows as scores approach 100%. Two results whose ranges overlap are
-  not separable.
+  Two results whose ranges overlap are not separable.
 
   Containment runs both ways, and the gap between them says which side is the
-  superset. It comes from the same estimate, scaled by each file's size, so the
-  smaller file's figure carries the wider margin, and it grows with the size
-  difference. Above 4x both figures are withheld.
+  superset. Above a 4x size difference both figures are withheld.
 
 a refusal names its cause:
   eous: sample.macho:  unsupported_format: macho
@@ -278,7 +275,8 @@ def _run_compare(args: argparse.Namespace) -> int:
         named.append(None if found is text else text)
 
     try:
-        scores = digest.compare(resolved[0], resolved[1])
+        left, right = (digest.parse(text) for text in resolved)
+        scores = digest.compare(left, right)
     except digest.DigestError as exc:
         _warn(str(exc))
         return USAGE
@@ -288,7 +286,7 @@ def _run_compare(args: argparse.Namespace) -> int:
             json.dumps(
                 {
                     "meta": _meta(),
-                    "target": digest.parse(resolved[0]).target,
+                    "target": left.target,
                     "comparison": _as_scores(scores, named),
                 },
                 indent=1,
@@ -484,19 +482,8 @@ def _scored(score: float, margin: float) -> str:
     return f"{float(score):5.1f}% +/- {float(margin):3.1f}"
 
 
-def _bounds(scores: digest.Scores) -> tuple[float, float]:
-    return (
-        max(0.0, scores.similarity - scores.uncertainty),
-        min(100.0, scores.similarity + scores.uncertainty),
-    )
-
-
 def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
-    low, high = _bounds(scores)
-    print(
-        f"similarity:  {scores.similarity:.1f}% +/- {scores.uncertainty:.1f} "
-        f"({low:.1f}% to {high:.1f}%)"
-    )
+    print(f"similarity:  {scores.similarity:.1f}% +/- {scores.uncertainty:.1f}")
 
     if scores.left_in_right is None or scores.right_in_left is None:
         ratio = f"{digest.MAX_CONTAINMENT_RATIO:g}x"
@@ -505,32 +492,21 @@ def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
 
     left, right = (_readable(label) for label in labels)
     width = max(len(left), len(right))
-    print(
-        f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%"
-        f" +/- {scores.left_in_right_uncertainty:.1f}"
-    )
-    print(
-        f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%"
-        f" +/- {scores.right_in_left_uncertainty:.1f}"
-    )
+    print(f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%")
+    print(f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%")
 
 
 def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, object]:
     def rounded(value: float | None) -> float | None:
         return None if value is None else round(value, 4)
 
-    low, high = _bounds(scores)
     return {
         "left": labels[0],
         "right": labels[1],
         "similarity": round(scores.similarity, 4),
         "uncertainty": round(scores.uncertainty, 4),
-        "low": round(low, 4),
-        "high": round(high, 4),
         "left_in_right": rounded(scores.left_in_right),
         "right_in_left": rounded(scores.right_in_left),
-        "left_in_right_uncertainty": rounded(scores.left_in_right_uncertainty),
-        "right_in_left_uncertainty": rounded(scores.right_in_left_uncertainty),
     }
 
 
