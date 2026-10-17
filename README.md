@@ -1,5 +1,7 @@
 # eous
 
+[![ci](https://github.com/jiacwng/eous/actions/workflows/ci.yml/badge.svg)](https://github.com/jiacwng/eous/actions/workflows/ci.yml)
+
 eous is a fuzzy hashing tool for executables. It is an alternative to ssdeep and tlsh. You run it against a
 PE or ELF binary on x86 or x86-64, and it produces a 512-bit hash of the program's code.
 
