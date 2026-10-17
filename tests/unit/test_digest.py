@@ -86,7 +86,9 @@ def test_the_margin_of_error_comes_from_the_slots_and_not_the_score() -> None:
     assert digest.compare(zeros, ones).uncertainty == pytest.approx(0.519, abs=0.001)
     assert digest.compare(zeros, mixed).uncertainty == pytest.approx(2.952, abs=0.001)
 
-    scored, spread = digest.score(digest.unpack_all([ones, mixed]), digest.unpack(zeros))
+    rows = digest.unpack_all([ones, mixed])
+    cardinalities = digest.cardinalities([ones, mixed])
+    scored, spread = digest.score(rows, cardinalities, digest.unpack(zeros), zeros.cardinality)
     assert list(scored) == [0.0, 0.0]
     assert float(spread[0]) == pytest.approx(0.519, abs=0.001)
     assert float(spread[1]) == pytest.approx(2.952, abs=0.001)
@@ -94,13 +96,28 @@ def test_the_margin_of_error_comes_from_the_slots_and_not_the_score() -> None:
 
 def test_the_batch_path_equals_compare_on_every_pair() -> None:
     group = [sketch_of(varied(300, seed=seed)) for seed in range(12)]
-    table = digest.unpack_all(group)
+    table, cardinalities = digest.unpack_all(group), digest.cardinalities(group)
     for left in group:
-        scored, spread = digest.score(table, digest.unpack(left))
+        scored, spread = digest.score(table, cardinalities, digest.unpack(left), left.cardinality)
         for index, right in enumerate(group):
             pair = digest.compare(left, right)
             assert float(scored[index]) == pair.similarity
             assert float(spread[index]) == pair.uncertainty
+
+
+def test_a_cardinality_gap_caps_the_similarity() -> None:
+    small = digest.Sketch("pe64", 100, 0)
+    large = digest.Sketch("pe64", 1000, 0)
+    assert digest.compare(small, large).similarity == pytest.approx(10.0)
+    assert digest.compare(large, small).similarity == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(("left", "right", "expected"), [(0, 0, 100.0), (0, 50, 0.0)])
+def test_an_empty_cardinality_bounds_without_dividing_by_zero(
+    left: int, right: int, expected: float
+) -> None:
+    scores = digest.compare(digest.Sketch("pe64", left, 0), digest.Sketch("pe64", right, 0))
+    assert scores.similarity == expected
 
 
 def test_identical_sketches_keep_a_margin() -> None:
