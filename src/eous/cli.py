@@ -358,7 +358,8 @@ def _run_match(args: argparse.Namespace) -> int:
         return USAGE
 
     rows = digest.unpack_all([sketch for _, sketch in kept])
-    scored, spread = digest.score(rows, digest.unpack(query))
+    cardinalities = digest.cardinalities([sketch for _, sketch in kept])
+    scored, spread = digest.score(rows, cardinalities, digest.unpack(query), query.cardinality)
     order = sorted(
         zip(scored, spread, (label for label, _ in kept), strict=True), key=lambda row: -row[0]
     )
@@ -443,9 +444,15 @@ def _run_cross(args: argparse.Namespace) -> int:
     for target in targets:
         members = grouped[target]
         rows = digest.unpack_all([sketches[index] for index in members])
+        cardinalities = digest.cardinalities([sketches[index] for index in members])
         for offset in range(len(members) - 1):
-            scores, spread = digest.score(rows[offset + 1 :], rows[offset])
             left = members[offset]
+            scores, spread = digest.score(
+                rows[offset + 1 :],
+                cardinalities[offset + 1 :],
+                rows[offset],
+                sketches[left].cardinality,
+            )
             total += len(scores)
             for step, (score, margin) in enumerate(zip(scores, spread, strict=True)):
                 if score < args.minimum:

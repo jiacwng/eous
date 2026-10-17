@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ELF64, JUNK, MACHO, PE32, PE64
-from eous import cli, pool, report
+from eous import cli, digest, pool, report
 
 CLEAN = PE64
 
@@ -739,13 +739,18 @@ def test_cross_json_writes_one_object_per_line(
 
 
 # The two commands read the same file through one reader and score on one path, so every
-# pair one of them reports must carry the identical score in the other.
+# pair one of them reports must carry the score compare gives, cardinality bound included.
 def test_cross_and_match_agree_on_every_pair(
     tmp_path: Path, output: pytest.CaptureFixture[str]
 ) -> None:
     text = digest_of(CLEAN)
     names = ["a", "b", "c", "d"]
-    weakened = [text[: len(text) - 8 * step] + "0" * (8 * step) for step in range(len(names))]
+    version, target, _, body = text.split(":")
+    weakened = [
+        f"{version}:{target}:{100 * 4**step}:{body[: len(body) - 8 * step]}{'0' * (8 * step)}"
+        for step in range(len(names))
+    ]
+    by_name = dict(zip(names, weakened, strict=True))
     known = tmp_path / "known.txt"
     known.write_text(
         "".join(f"{name}  {value}\n" for name, value in zip(names, weakened, strict=True)),
@@ -763,3 +768,5 @@ def test_cross_and_match_agree_on_every_pair(
             pair = (name, row["label"])
             if pair in from_cross:
                 assert from_cross[pair] == pytest.approx(row["similarity"])
+            expected = digest.compare(digest.parse(value), digest.parse(by_name[row["label"]]))
+            assert row["similarity"] == pytest.approx(expected.similarity, abs=1e-4)
