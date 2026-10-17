@@ -78,11 +78,21 @@ def unpack_all(sketches: Sequence[Sketch]) -> numpy.ndarray:
     return numpy.stack([unpack(sketch) for sketch in sketches])
 
 
-def score(rows: numpy.ndarray, one: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
-    # Two unrelated sets already agree on one slot in four, so chance agreement comes off.
+def cardinalities(sketches: Sequence[Sketch]) -> numpy.ndarray:
+    return numpy.array([sketch.cardinality for sketch in sketches], dtype=numpy.float64)
+
+
+def score(
+    rows: numpy.ndarray, row_cardinalities: numpy.ndarray, one: numpy.ndarray, cardinality: int
+) -> tuple[numpy.ndarray, numpy.ndarray]:
+    # Two unrelated sets already agree on one slot in four, so chance agreement comes off,
+    # and their Jaccard cannot exceed the smaller cardinality over the larger.
     agreed = numpy.count_nonzero(rows == one, axis=1) / PERMUTATIONS
     similarity = numpy.maximum(0.0, (agreed - FLOOR) / (1 - FLOOR)) * 100
-    return similarity, _wilson_margin(agreed) / (1 - FLOOR) * 100
+    smaller = numpy.minimum(row_cardinalities, cardinality)
+    larger = numpy.maximum(row_cardinalities, cardinality)
+    bound = numpy.divide(smaller, larger, out=numpy.ones_like(larger), where=larger > 0)
+    return numpy.minimum(similarity, bound * 100), _wilson_margin(agreed) / (1 - FLOOR) * 100
 
 
 def _wilson_margin(agreed: numpy.ndarray) -> numpy.ndarray:
@@ -99,7 +109,9 @@ def compare(left: Sketch, right: Sketch) -> Scores:
     if left.target != right.target:
         raise DigestError(f"different targets: {left.target} and {right.target}")
 
-    similarity, uncertainty = score(unpack(left).reshape(1, -1), unpack(right))
+    similarity, uncertainty = score(
+        unpack(left).reshape(1, -1), cardinalities([left]), unpack(right), right.cardinality
+    )
     overlap = float(similarity[0])
     left_in_right, right_in_left = _containment(overlap / 100, left.cardinality, right.cardinality)
     return Scores(overlap, float(uncertainty[0]), left_in_right, right_in_left)
@@ -110,6 +122,5 @@ def _containment(jaccard: float, left: int, right: int) -> tuple[float | None, f
     if smaller == 0 or larger > smaller * MAX_CONTAINMENT_RATIO:
         return (None, None)
 
-    jaccard = min(jaccard, smaller / larger)
     shared = jaccard * (left + right) / (1 + jaccard)
     return (min(1.0, shared / left) * 100, min(1.0, shared / right) * 100)
