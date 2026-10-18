@@ -52,7 +52,6 @@ eous = "eous.cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "iced-x86==1.21.0",
     "pytest>=8",
     "pytest-cov>=5",
     "ruff>=0.5",

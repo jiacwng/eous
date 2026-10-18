@@ -2,29 +2,31 @@ import random
 
 import pytest
 
-import reference
-from eous import digest
+from eous import _native, digest
 from eous.digest import DigestError
 
-# Real mnemonics, since invented names resolve to the unknown token.
+# x86-64 encodings of instructions that fall through, one mnemonic each, so any sequence of
+# them decodes as a single run.
 # fmt: off
-POOL = [
-    "mov", "push", "pop", "add", "sub", "xor", "and", "or", "cmp", "test",
-    "lea", "inc", "dec", "shl", "shr", "sar", "rol", "ror", "imul", "mul",
-    "div", "neg", "adc", "sbb", "xchg", "bswap", "movzx", "movsx", "bt", "bts",
-    "bsf", "bsr", "cdq", "cwde", "setne", "sete", "cmovne", "cmove", "nop", "leave",
-]
+POOL = [bytes.fromhex(code) for code in (
+    "4889d8", "50", "58", "4801d8", "4829d8", "31c0", "4821d8", "4809d8", "4839d8", "4885d8",
+    "488d4308", "48ffc0", "48ffc8", "48d1e0", "48d1e8", "48d1f8", "48d1c0", "48d1c8",
+    "480fafc3", "48f7e3", "48f7d8", "4811d8", "4819d8", "4893", "480fc8", "0fb6c3", "0fbec3",
+    "480fa3d8", "480fabd8", "480fbcc3", "480fbdc3", "99", "98", "0f95c0", "0f94c0",
+    "480f45c3", "480f44c3", "90", "c9",
+)]
 # fmt: on
+MOV, PUSH = POOL[0], POOL[1]
 BODY = "a" * digest.SKETCH_HEX
 
 
-def varied(length: int, seed: int) -> list[str]:
+def varied(length: int, seed: int) -> list[bytes]:
     rng = random.Random(seed)
     return [rng.choice(POOL) for _ in range(length)]
 
 
-def sketch_of(*runs: list[str]) -> digest.Sketch:
-    text = reference.digest(tuple(tuple(run) for run in runs), "pe64")
+def sketch_of(code: list[bytes]) -> digest.Sketch:
+    text = _native.digest([b"".join(code)], 64, "pe64")
     assert text is not None
     return digest.parse(text)
 
@@ -66,11 +68,12 @@ def test_a_malformed_digest_raises(text: str, complaint: str) -> None:
 
 
 def test_unpacking_recovers_every_slot() -> None:
-    sketch = sketch_of(varied(300, seed=0))
-    slots = digest.unpack(sketch)
+    text = _native.digest([b"".join(varied(300, seed=0))], 64, "pe64")
+    assert text is not None
+    slots = digest.unpack(digest.parse(text))
     assert len(slots) == digest.PERMUTATIONS
     # Read the bits back off the printed digest, so the check uses the published format.
-    body = int(reference.render(sketch).rsplit(":", 1)[-1], 16)
+    body = int(text.rsplit(":", 1)[-1], 16)
     assert [int(value) for value in slots] == [
         (body >> (digest.PERMUTATIONS - 1 - index) * digest.SLOT_BITS) & digest.MASK
         for index in range(digest.PERMUTATIONS)
@@ -121,7 +124,7 @@ def test_an_empty_cardinality_bounds_without_dividing_by_zero(
 
 
 def test_identical_sketches_keep_a_margin() -> None:
-    sketch = sketch_of(["mov", "push"] * 30)
+    sketch = sketch_of([MOV, PUSH] * 30)
     scores = digest.compare(sketch, sketch)
     assert scores.similarity == 100.0
     assert scores.uncertainty == pytest.approx(0.519, abs=0.001)
