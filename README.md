@@ -6,8 +6,8 @@ eous is a fuzzy hashing tool for executables. It is an alternative to ssdeep and
 PE or ELF binary on x86 or x86-64, and it produces a 512-bit hash of the program's code.
 
 eous works on instruction mnemonics. It disassembles every executable section and maps each
-mnemonic to one of 84 instruction categories, so for example `add`, `adc` and `xadd` map to
-one category. It forms the 6-grams (shingles) of the category sequence, stopping each at a
+mnemonic to one of 84 roots, groups of mnemonics with one meaning, so `add`, `adc` and `xadd`
+share a root. It forms the 6-grams (shingles) of the root sequence, stopping each at a
 control-flow instruction, then reduces the n-gram set to a 512-bit MinHash sketch.
 Recompilation moves bytes and rewrites addresses. The mnemonic sequence survives both, so
 two builds of one source still produce similar digests.
@@ -71,7 +71,7 @@ bounds `cross`.
 | Targets | pe32, pe64, elf32, elf64 |
 
 Two digests compare only when their target matches; `match` and `cross` skip mismatched
-entries and report the count. eous reads native code, when it declines, it names the
+entries and report the count. eous reads native code. When it declines a file, it names the
 reason: a .NET assembly holding only bytecode (`managed`), a file whose code
 sections are packed (`packed`), a container that is neither PE nor ELF
 (`unsupported_format`), an architecture it does not support (`unsupported_arch`), a file with
@@ -117,8 +117,8 @@ against imports 0.863, size 0.852 and tlsh 0.848.
 ## Limits
 
 - eous reads native code, so it refuses anything it cannot disassemble. On 2250 malware
-  samples from MalwareBazaar it produced 1673 digests and refused 577: 296 as .NET bytecode
-  and 279 as packed. A pipeline using eous alone needs a second tool for those two cases.
+  samples from MalwareBazaar it produced 1673 digests and refused 577: 296 as .NET bytecode,
+  279 as packed and 2 for other reasons. A pipeline using eous alone needs a second tool for those two cases.
 - If eous accepted packed files, the packer would leave only its unpacking stub as readable
   code, so unrelated programs packed the same way would share one digest.
 - ELF is the weaker target. eous reaches AUC 0.897 against telfhash 0.942, and on distant
@@ -135,8 +135,8 @@ against imports 0.863, size 0.852 and tlsh 0.848.
 EO1:pe32:40045:780e1dde...
  |   |     |     the 512-bit sketch, 128 hex characters
  |   |     distinct 6-grams found
- |   architecture and format
- the tool's version
+ |   target: format and word size
+ the digest format version
 ```
 
 A digest always begins `EO1:`, so it is greppable in a log.

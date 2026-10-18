@@ -534,7 +534,7 @@ def _expand(paths: list[Path]) -> list[Path]:
         else:
             walked = [path]
         for candidate in walked:
-            real = candidate.resolve()
+            real = Path(os.path.realpath(candidate))
             if real not in seen:
                 seen.add(real)
                 found.append(candidate)
