@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-import reference
 from conftest import FIXTURES
 from eous import _native, cli, loader, toolchain
 
@@ -45,11 +44,11 @@ def test_a_fixture_is_the_file_the_vector_was_taken_from(entry: dict[str, object
     assert hashlib.sha256(raw).hexdigest() == entry["sha256"]
 
 
-# Hand-written runs, so an algorithm change and a rebuilt fixture fail separately.
+# Hand-written machine code, so an algorithm change and a rebuilt fixture fail separately.
 def test_the_synthetic_case_reproduces() -> None:
     case = VECTORS["synthetic"]
-    runs = tuple(tuple(run) for run in case["runs"])
-    assert reference.digest(runs, case["target"]) == case["digest"]
+    code = bytes.fromhex(case["code"])
+    assert _native.digest([code], case["bitness"], case["target"]) == case["digest"]
 
 
 # A digest is only reproducible under the decoder that produced it.
