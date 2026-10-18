@@ -56,8 +56,11 @@ $ eous match suspect.exe known.txt --min 80
 **Cross** scores every pair in a collection, for triage with no query file:
 
 ```
-$ eous cross known.txt --min 40
+$ eous cross known.txt --min 40 | sort -rn
 ```
+
+Pairs print in scan order, so memory stays flat on a large collection. Pipe through `sort -rn`
+to read them best first.
 
 `--json` on any command. `--top N` and `--min PERCENT` bound the output of `match`; `--min`
 bounds `cross`.
