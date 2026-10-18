@@ -255,5 +255,10 @@ fn digest(
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(digest, module)?)?;
     module.add("ICED_X86", ICED_X86)?;
+    module.add("VERSION", VERSION)?;
+    module.add("TARGETS", TARGETS)?;
+    module.add("NGRAM", NGRAM)?;
+    module.add("PERMUTATIONS", PERMUTATIONS)?;
+    module.add("SLOT_BITS", SLOT_BITS)?;
     Ok(())
 }

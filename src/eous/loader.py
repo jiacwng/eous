@@ -22,6 +22,13 @@ COR20_FLAGS_OFFSET = 16
 COR20_NATIVE_OFFSET = 64
 COR20_IL_ONLY = 0x1
 
+DOS_HEADER_SIZE = 0x40
+DOS_LFANEW_OFFSET = 0x3C
+COFF_SECTION_COUNT_OFFSET = 6
+COFF_HEADER_END = 24
+SECTION_HEADER_SIZE = 40
+SECTION_RAW_SIZE_OFFSET = 16
+
 PE_ARCHES = {"I386": "x86", "AMD64": "x86-64"}
 ELF_ARCHES = {"I386": "x86", "X86_64": "x86-64"}
 
@@ -227,17 +234,19 @@ def _executable_segments(parsed: lief.ELF.Binary, size: int) -> list[Section]:
 
 
 def _check_pe_sections(raw: bytes) -> None:
-    if len(raw) < 0x40 or raw[:2] != b"MZ":
+    if len(raw) < DOS_HEADER_SIZE or raw[:2] != b"MZ":
         return
-    header = struct.unpack_from("<I", raw, 0x3C)[0]
-    if header + 24 > len(raw) or raw[header : header + 4] != b"PE\0\0":
+    header = struct.unpack_from("<I", raw, DOS_LFANEW_OFFSET)[0]
+    if header + COFF_HEADER_END > len(raw) or raw[header : header + 4] != b"PE\0\0":
         return
-    count, _, _, _, optional_size = struct.unpack_from("<HIIIH", raw, header + 6)
-    table = header + 24 + optional_size
-    end = min(table + 40 * count, len(raw))
+    count, _, _, _, optional_size = struct.unpack_from(
+        "<HIIIH", raw, header + COFF_SECTION_COUNT_OFFSET
+    )
+    table = header + COFF_HEADER_END + optional_size
+    end = min(table + SECTION_HEADER_SIZE * count, len(raw))
     claimed = 0
-    for entry in range(table, end - 39, 40):
-        raw_size, pointer = struct.unpack_from("<II", raw, entry + 16)
+    for entry in range(table, end - SECTION_HEADER_SIZE + 1, SECTION_HEADER_SIZE):
+        raw_size, pointer = struct.unpack_from("<II", raw, entry + SECTION_RAW_SIZE_OFFSET)
         claimed += min(raw_size, max(0, len(raw) - pointer))
     if claimed > SECTION_DATA_RATIO * len(raw):
         raise LoaderError(
