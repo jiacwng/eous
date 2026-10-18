@@ -26,6 +26,8 @@ jobs:
             python: "3.12"
           - os: ubuntu-latest
             python: "3.13"
+          - os: ubuntu-latest
+            python: "3.14"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -34,10 +36,17 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: "pip"
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e ".[dev]"
+          cache-dependency-path: |
+            pyproject.toml
+            .github/constraints.txt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: native
+      - run: pip install -e ".[dev]" -c .github/constraints.txt
       - run: cargo fmt --manifest-path native/Cargo.toml --check
       - run: cargo clippy --manifest-path native/Cargo.toml -- -D warnings
+      - run: cargo clippy --manifest-path native/Cargo.toml --no-default-features --tests -- -D warnings
+      - run: cargo test --manifest-path native/Cargo.toml --no-default-features
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy src

@@ -5,11 +5,7 @@ use std::sync::OnceLock;
 
 use blake2b_simd::Params;
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
-use pyo3::exceptions::PyValueError;
-use pyo3::prelude::*;
-use pyo3::pybacked::PyBackedBytes;
 
-const ICED_X86: &str = "1.21.0";
 const ROOTS_JSON: &str = include_str!("../roots.json");
 const OOV: &str = "<oov>";
 const VERSION: &str = "EO1";
@@ -34,16 +30,24 @@ struct Vocabulary {
     ids: Vec<u8>,
 }
 
+fn roots() -> HashMap<String, String> {
+    serde_json::from_str(ROOTS_JSON).expect("roots.json is a flat object of strings")
+}
+
+fn mnemonic_name(mnemonic: Mnemonic) -> String {
+    format!("{mnemonic:?}").to_lowercase()
+}
+
 fn vocabulary() -> &'static Vocabulary {
     static VOCABULARY: OnceLock<Vocabulary> = OnceLock::new();
     VOCABULARY.get_or_init(|| {
-        let table: HashMap<String, String> =
-            serde_json::from_str(ROOTS_JSON).expect("roots.json is a flat object of strings");
+        let table = roots();
         let mut names: Vec<String> = Vec::new();
         let ids = Mnemonic::values()
             .map(|mnemonic| {
-                let name = format!("{mnemonic:?}").to_lowercase();
-                let root = table.get(&name).map_or(OOV, String::as_str);
+                let root = table
+                    .get(&mnemonic_name(mnemonic))
+                    .map_or(OOV, String::as_str);
                 let id = names
                     .iter()
                     .position(|known| known == root)
@@ -214,46 +218,244 @@ fn sketch(keys: &[u64], names: &[String]) -> String {
         .collect()
 }
 
-#[pyfunction]
-fn digest(
-    py: Python<'_>,
-    sections: Vec<PyBackedBytes>,
+fn digest_of<S: AsRef<[u8]>>(
+    sections: &[S],
     bitness: u32,
     target: &str,
-) -> PyResult<Option<String>> {
+) -> Result<Option<String>, String> {
     if !BITNESSES.contains(&bitness) {
-        return Err(PyValueError::new_err(format!(
-            "unsupported bitness {bitness}"
-        )));
+        return Err(format!("unsupported bitness {bitness}"));
     }
     if !TARGETS.contains(&target) {
-        return Err(PyValueError::new_err(format!(
-            "unsupported target {target:?}"
-        )));
+        return Err(format!("unsupported target {target:?}"));
     }
     let vocabulary = vocabulary();
-    Ok(py.detach(|| {
-        let mut shingles = Shingles::new();
-        for section in &sections {
-            disassemble(section, bitness, &vocabulary.ids, &mut shingles);
-        }
-        let keys = shingles.finish();
+    let mut shingles = Shingles::new();
+    for section in sections {
+        disassemble(section.as_ref(), bitness, &vocabulary.ids, &mut shingles);
+    }
+    let keys = shingles.finish();
 
-        let mut seen = [false; 1 << ROOT_BITS];
-        keys.iter()
-            .flat_map(|&key| root_ids(key))
-            .for_each(|id| seen[id] = true);
-        if seen.iter().filter(|&&found| found).count() < 2 {
-            return None;
-        }
-        let body = sketch(&keys, &vocabulary.names);
-        Some(format!("{VERSION}:{target}:{}:{body}", keys.len()))
-    }))
+    let mut seen = [false; 1 << ROOT_BITS];
+    keys.iter()
+        .flat_map(|&key| root_ids(key))
+        .for_each(|id| seen[id] = true);
+    if seen.iter().filter(|&&found| found).count() < 2 {
+        return Ok(None);
+    }
+    let body = sketch(&keys, &vocabulary.names);
+    Ok(Some(format!("{VERSION}:{target}:{}:{body}", keys.len())))
 }
 
-#[pymodule]
-fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(digest, module)?)?;
-    module.add("ICED_X86", ICED_X86)?;
-    Ok(())
+#[cfg(feature = "python")]
+mod python {
+    use pyo3::exceptions::PyValueError;
+    use pyo3::prelude::*;
+    use pyo3::pybacked::PyBackedBytes;
+
+    const ICED_X86: &str = "1.21.0";
+
+    #[pyfunction]
+    fn digest(
+        py: Python<'_>,
+        sections: Vec<PyBackedBytes>,
+        bitness: u32,
+        target: &str,
+    ) -> PyResult<Option<String>> {
+        py.detach(|| super::digest_of(&sections, bitness, target))
+            .map_err(PyValueError::new_err)
+    }
+
+    #[pymodule]
+    fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+        module.add_function(wrap_pyfunction!(digest, module)?)?;
+        module.add("ICED_X86", ICED_X86)?;
+        module.add("VERSION", super::VERSION)?;
+        module.add("TARGETS", super::TARGETS)?;
+        module.add("NGRAM", super::NGRAM)?;
+        module.add("PERMUTATIONS", super::PERMUTATIONS)?;
+        module.add("SLOT_BITS", super::SLOT_BITS)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const XOR_PUSH: &[u8] = b"\x31\xc0\x50";
+    const XOR: &[u8] = b"\x31\xc0";
+    const RET: &[u8] = b"\xc3";
+    const NOP: &[u8] = b"\x90";
+    const INVALID_IN_64_BIT: &[u8] = b"\x06";
+
+    const ENDS_A_RUN: [(&[u8], &str); 8] = [
+        (b"\xc3", "ret"),
+        (b"\xeb\x00", "jmp"),
+        (b"\xff\xe0", "jmp rax"),
+        (b"\xe8\x00\x00\x00\x00", "call"),
+        (b"\xff\xd0", "call rax"),
+        (b"\x74\x00", "je"),
+        (b"\x0f\x05", "syscall"),
+        (b"\x0f\x0b", "ud2"),
+    ];
+    const FALLS_THROUGH: [(&[u8], &str); 2] = [(b"\xcc", "int3"), (b"\x90", "nop")];
+
+    fn code(parts: &[&[u8]]) -> Vec<u8> {
+        parts.concat()
+    }
+
+    fn digest64(sections: &[Vec<u8>]) -> Option<String> {
+        digest_of(sections, 64, "pe64").expect("a supported bitness and target")
+    }
+
+    fn one(data: Vec<u8>) -> Option<String> {
+        digest64(&[data])
+    }
+
+    fn cardinality(text: &str) -> usize {
+        text.split(':').nth(2).unwrap().parse().unwrap()
+    }
+
+    // Three instructions on each side, so only a run carried across the middle reaches six.
+    fn around(middle: &[u8]) -> Vec<u8> {
+        code(&[XOR_PUSH, XOR, middle, XOR_PUSH, XOR])
+    }
+
+    #[test]
+    fn every_mnemonic_iced_emits_has_a_root() {
+        let placeholders = ["invalid", "db", "dw", "dd", "dq", "zero_bytes"];
+        let table = roots();
+        let missing: Vec<String> = Mnemonic::values()
+            .map(mnemonic_name)
+            .filter(|name| !placeholders.contains(&name.as_str()) && !table.contains_key(name))
+            .collect();
+        assert!(missing.is_empty(), "no root for {missing:?}");
+    }
+
+    #[test]
+    fn a_run_shorter_than_a_shingle_gives_no_digest() {
+        assert_eq!(one(code(&[XOR_PUSH, XOR_PUSH, RET])), None);
+        assert!(one(XOR_PUSH.repeat(3)).is_some());
+    }
+
+    #[test]
+    fn control_flow_ends_a_run() {
+        for (encoding, name) in ENDS_A_RUN {
+            assert_eq!(one(around(encoding)), None, "{name} left the run open");
+        }
+    }
+
+    #[test]
+    fn an_interrupt_and_a_plain_instruction_fall_through() {
+        for (encoding, name) in FALLS_THROUGH {
+            assert!(one(around(encoding)).is_some(), "{name} ended the run");
+        }
+    }
+
+    #[test]
+    fn an_invalid_byte_ends_the_run_and_decoding_resumes_after_it() {
+        assert_eq!(one(around(INVALID_IN_64_BIT)), None);
+        assert!(one(code(&[INVALID_IN_64_BIT, &XOR_PUSH.repeat(3)])).is_some());
+    }
+
+    #[test]
+    fn a_repeat_past_six_adds_no_shingle() {
+        let nops = |count: usize| one(code(&[XOR_PUSH, &NOP.repeat(count), XOR_PUSH]));
+        assert!(nops(6).is_some());
+        assert_ne!(nops(5), nops(6));
+        assert_eq!(nops(6), nops(7));
+        assert_eq!(nops(6), nops(40));
+    }
+
+    #[test]
+    fn a_run_never_crosses_from_one_section_into_the_next() {
+        let half = code(&[XOR_PUSH, XOR]);
+        assert_eq!(digest64(&[half.clone(), half.clone()]), None);
+        assert!(one(half.repeat(2)).is_some());
+    }
+
+    #[test]
+    fn the_cardinality_counts_distinct_shingles() {
+        assert_eq!(cardinality(&one(XOR_PUSH.repeat(3)).unwrap()), 1);
+        assert_eq!(cardinality(&one(XOR_PUSH.repeat(4)).unwrap()), 2);
+        assert_eq!(cardinality(&one(XOR_PUSH.repeat(40)).unwrap()), 2);
+    }
+
+    #[test]
+    fn a_single_root_gives_no_digest() {
+        assert_eq!(one(NOP.repeat(20)), None);
+    }
+
+    #[test]
+    fn section_order_does_not_change_the_digest() {
+        let first = code(&[&XOR_PUSH.repeat(3), RET]);
+        let second = around(NOP);
+        assert_eq!(
+            digest64(&[first.clone(), second.clone()]),
+            digest64(&[second, first])
+        );
+    }
+
+    #[test]
+    fn a_digest_has_the_eo1_layout() {
+        let text = one(XOR_PUSH.repeat(3)).unwrap();
+        let fields: Vec<&str> = text.split(':').collect();
+        assert_eq!(fields[..3], ["EO1", "pe64", "1"]);
+        assert_eq!(fields[3].len(), PERMUTATIONS * SLOT_BITS as usize / 4);
+        assert!(fields[3].bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn an_unsupported_bitness_or_target_is_an_error() {
+        let data = [NOP.to_vec()];
+        assert!(digest_of(&data, 16, "pe32")
+            .unwrap_err()
+            .contains("bitness"));
+        assert!(digest_of(&data, 32, "macho")
+            .unwrap_err()
+            .contains("target"));
+    }
+
+    #[test]
+    fn the_permutation_is_exact_modular_arithmetic() {
+        let mut values = vec![0, 1, 2, MODULUS - 2, MODULUS - 1];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for _ in 0..1000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            values.push(state % MODULUS);
+        }
+        for &(multiplier, offset) in coefficients().iter().take(16) {
+            for &value in &values {
+                let exact = (u128::from(multiplier) * u128::from(value) + u128::from(offset))
+                    % u128::from(MODULUS);
+                assert_eq!(u128::from(permute(multiplier, offset, value)), exact);
+            }
+        }
+    }
+
+    // Noise lands on invalid encodings, prefixes, repeats and cut runs, the edges of decoding.
+    #[test]
+    fn hostile_code_digests_without_panicking_and_reproducibly() {
+        let mut state = 20_261_013_u64;
+        let noise: Vec<u8> = (0..65_536)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                (state >> 56) as u8
+            })
+            .collect();
+        for data in [
+            Vec::new(),
+            b"\xcc".repeat(64),
+            b"\xff\xff".repeat(32),
+            code(&[&XOR_PUSH.repeat(4), RET]).repeat(50),
+            noise,
+        ] {
+            assert_eq!(one(data.clone()), one(data));
+        }
+    }
 }

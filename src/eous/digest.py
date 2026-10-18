@@ -8,10 +8,12 @@ from dataclasses import dataclass
 
 import numpy
 
-VERSION = "EO1"
+from eous import _native
 
-PERMUTATIONS = 256
-SLOT_BITS = 2
+VERSION = _native.VERSION
+PERMUTATIONS = _native.PERMUTATIONS
+SLOT_BITS = _native.SLOT_BITS
+TARGETS = tuple(_native.TARGETS)
 
 MAX_CONTAINMENT_RATIO = 4.0
 
@@ -22,7 +24,6 @@ MASK = (1 << SLOT_BITS) - 1
 SKETCH_BYTES = PERMUTATIONS * SLOT_BITS // 8
 SKETCH_HEX = SKETCH_BYTES * 2
 
-TARGETS = ("pe32", "pe64", "elf32", "elf64")
 SKETCH_PATTERN = re.compile(f"^[0-9a-f]{{{SKETCH_HEX}}}$")
 
 

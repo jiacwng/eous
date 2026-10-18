@@ -6,12 +6,13 @@ import subprocess
 import sys
 import time
 from functools import cache
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 
 from conftest import ELF64, JUNK, MACHO, PE32, PE64
-from eous import cli, digest, pool, report
+from eous import _native, cli, digest, pool, report
 
 CLEAN = PE64
 
@@ -259,7 +260,9 @@ def test_hash_without_a_file_is_a_usage_error(output: pytest.CaptureFixture[str]
 
 def test_version_prints_and_succeeds(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["--version"]) == cli.OK
-    assert output.readouterr().out.strip()
+    lines = output.readouterr().out.splitlines()
+    assert lines[0].startswith("eous ")
+    assert lines[1:] == [f"iced-x86 {_native.ICED_X86}", f"lief {version('lief')}"]
 
 
 def test_help_exits_zero_through_main(output: pytest.CaptureFixture[str]) -> None:
@@ -285,10 +288,21 @@ def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[s
 
 
 # The filesystem answers first, so a mistyped path reports as absent rather than being
-# read as a malformed digest.
-def test_a_mistyped_path_reports_no_such_file(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["compare", "no/such/file.exe", str(CLEAN)]) == cli.USAGE
-    assert "no such file" in output.readouterr().err
+# read as a malformed digest, and every command refuses it the same way.
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["hash", "no/such/file.exe"],
+        ["compare", "no/such/file.exe", str(CLEAN)],
+        ["match", "no/such/file.exe", str(CLEAN)],
+    ],
+    ids=["hash", "compare", "match"],
+)
+def test_a_mistyped_path_is_refused_as_absent(
+    args: list[str], output: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(args) == cli.REFUSED
+    assert f"{Path('no/such/file.exe')}: unreadable: file is absent" in output.readouterr().err
 
 
 def test_differing_targets_are_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
@@ -356,7 +370,7 @@ def explode(path: Path) -> object:
 def test_an_unexpected_failure_exits_three(
     monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli.report, "analyse", explode)
+    monkeypatch.setattr(report, "analyse", explode)
     assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
     assert "something gave way" in output.readouterr().err
 
@@ -374,7 +388,7 @@ def hostile_refusal(path: Path) -> report.Analysis:
 def test_a_section_name_cannot_forge_a_refusal_line(
     monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli.report, "analyse", hostile_refusal)
+    monkeypatch.setattr(report, "analyse", hostile_refusal)
     assert cli.main(["hash", str(CLEAN)]) == cli.REFUSED
 
     printed = output.readouterr().err
@@ -694,7 +708,7 @@ def test_cross_pairs_inside_each_target(tmp_path: Path, output: pytest.CaptureFi
     assert cli.main(["cross", str(known)]) == cli.OK
     captured = output.readouterr()
     assert len([line for line in captured.out.splitlines() if line]) == 2
-    assert "2 pairs scored across elf64, pe64" in captured.err
+    assert "2 pairs scored across pe64, elf64" in captured.err
 
 
 def test_cross_holds_back_anything_below_the_minimum(
@@ -731,10 +745,10 @@ def test_cross_json_writes_one_object_per_line(
 
     header, *pairs, summary = lines
     assert header["digests"] == 4
-    assert header["targets"] == ["elf64", "pe64"]
+    assert header["targets"] == ["pe64", "elf64"]
     assert header["unparsed"] == 0
     assert summary == {"pairs_scored": 2, "below_minimum": 0}
-    assert {row["target"] for row in pairs} == {"elf64", "pe64"}
+    assert [row["target"] for row in pairs] == ["pe64", "elf64"]
     assert pairs[0]["similarity"] == pytest.approx(100.0)
 
 
@@ -770,3 +784,11 @@ def test_cross_and_match_agree_on_every_pair(
                 assert from_cross[pair] == pytest.approx(row["similarity"])
             expected = digest.compare(digest.parse(value), digest.parse(by_name[row["label"]]))
             assert row["similarity"] == pytest.approx(expected.similarity, abs=1e-4)
+
+
+# LIEF takes most of a second to import, and --help, --version and a comparison of two
+# digest strings parse no binary.
+def test_the_cli_imports_no_parser_until_a_binary_is_read() -> None:
+    probe = "import sys, eous.cli; print('lief' in sys.modules)"
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, check=True)
+    assert result.stdout.strip() == b"False"

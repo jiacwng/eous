@@ -12,8 +12,12 @@ import sys
 from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from eous import digest, pool, report, toolchain
+from eous import digest, toolchain
+
+if TYPE_CHECKING:
+    from eous import report
 
 OK = 0
 REFUSED = 1
@@ -121,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     match_command.add_argument("query", nargs="?", metavar="FILE-OR-DIGEST")
     match_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
     match_command.add_argument(
-        "--top", type=int, default=10, help="how many results to print, default 10"
+        "--top", type=_count, default=10, help="how many results to print, default 10"
     )
 
     cross_command = commands.add_parser(
@@ -129,14 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="score every pair in a file of digests",
         description="Score each digest in a file against every other, in the order they "
         "were read. The file is what `eous hash` writes. Pairs are scored inside each "
-        "target, since two digests compare only when their targets match.",
+        "target, since two digests compare only when their targets match, and the "
+        "targets follow in the order they first appear.",
     )
     cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
 
     for command in (match_command, cross_command):
         command.add_argument(
             "--min",
-            type=float,
+            type=_percentage,
             default=0.0,
             dest="minimum",
             metavar="PERCENT",
@@ -146,6 +151,20 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
+
+
+def _count(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("a count of 0 or more")
+    return value
+
+
+def _percentage(text: str) -> float:
+    value = float(text)
+    if not 0.0 <= value <= 100.0:
+        raise argparse.ArgumentTypeError("a percentage from 0 to 100")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -250,14 +269,10 @@ def _looks_like_a_path(text: str) -> bool:
 
 
 def _as_digest(text: str) -> tuple[str | None, int]:
-    path = Path(text)
-    if not os.path.isfile(path):
-        if _looks_like_a_path(text):
-            _warn(f"{_readable(text)}: no such file")
-            return (None, USAGE)
+    if not os.path.isfile(text) and not _looks_like_a_path(text):
         return (text, OK)
 
-    [result] = _analyse([path])
+    [result] = _analyse([Path(text)])
     if result.refusal is not None:
         _warn(_refusal_line(result.path, result.refusal))
         return (None, REFUSED)
@@ -329,13 +344,6 @@ def _read_digests(path: Path) -> tuple[list[str], list[digest.Sketch], int] | No
 
 
 def _run_match(args: argparse.Namespace) -> int:
-    if args.top < 0:
-        _warn("--top is a count of 0 or more")
-        return USAGE
-    if not 0.0 <= args.minimum <= 100.0:
-        _warn("--min is a percentage from 0 to 100")
-        return USAGE
-
     text, code = _as_digest(args.query)
     if text is None:
         return code
@@ -378,11 +386,7 @@ def _run_match(args: argparse.Namespace) -> int:
                     "unparsed": unparsed,
                     "below_minimum": below_minimum,
                     "matches": [
-                        {
-                            "label": label,
-                            "similarity": round(float(score), 4),
-                            "uncertainty": round(float(margin), 4),
-                        }
+                        {"label": label, **_rounded(score, margin)}
                         for score, margin, label in ranked
                     ],
                 },
@@ -408,10 +412,6 @@ def _by_target(sketches: list[digest.Sketch]) -> dict[str, list[int]]:
 
 
 def _run_cross(args: argparse.Namespace) -> int:
-    if not 0.0 <= args.minimum <= 100.0:
-        _warn("--min is a percentage from 0 to 100")
-        return USAGE
-
     read = _read_digests(args.known)
     if read is None:
         return USAGE
@@ -423,7 +423,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         return USAGE
 
     shown = [_readable(label) for label in labels]
-    targets = sorted(grouped)
+    targets = list(grouped)
     alone = len(sketches) - sum(len(grouped[target]) for target in targets)
     below_minimum = 0
     total = 0
@@ -466,8 +466,7 @@ def _run_cross(args: argparse.Namespace) -> int:
                                 "left": labels[left],
                                 "right": labels[right],
                                 "target": target,
-                                "similarity": round(float(score), 4),
-                                "uncertainty": round(float(margin), 4),
+                                **_rounded(score, margin),
                             }
                         )
                     )
@@ -503,6 +502,10 @@ def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
     print(f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%")
 
 
+def _rounded(score: float, margin: float) -> dict[str, float]:
+    return {"similarity": round(float(score), 4), "uncertainty": round(float(margin), 4)}
+
+
 def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, object]:
     def rounded(value: float | None) -> float | None:
         return None if value is None else round(value, 4)
@@ -510,14 +513,15 @@ def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, obj
     return {
         "left": labels[0],
         "right": labels[1],
-        "similarity": round(scores.similarity, 4),
-        "uncertainty": round(scores.uncertainty, 4),
+        **_rounded(scores.similarity, scores.uncertainty),
         "left_in_right": rounded(scores.left_in_right),
         "right_in_left": rounded(scores.right_in_left),
     }
 
 
 def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
+    from eous import pool, report
+
     return pool.analyse(paths, report.analyse)
 
 
