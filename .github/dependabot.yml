@@ -1,3 +1,4 @@
+# Bump PRs for the actions, the pinned CI tools and the Rust crates; an iced-x86 bump means regenerating the vectors.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -5,14 +6,20 @@ updates:
     schedule:
       interval: weekly
 
-  # iced-x86, lief and numpy stay ungrouped: a decoder bump moves every digest.
   - package-ecosystem: pip
-    directory: "/"
+    directories: ["/", "/.github"]
     schedule:
       interval: monthly
     groups:
       dev-tools:
         patterns:
+          - "coverage"
+          - "maturin"
+          - "mypy"
           - "pytest*"
           - "ruff"
-          - "mypy"
+
+  - package-ecosystem: cargo
+    directory: "/native"
+    schedule:
+      interval: monthly

@@ -44,6 +44,10 @@ def crashed(path: Path) -> Analysis:
     return _refuse(path, UNREADABLE, "the analysis process ended abruptly")
 
 
+def overran(path: Path, seconds: float) -> Analysis:
+    return _refuse(path, UNREADABLE, f"the analysis exceeded its {seconds:.0f} s time limit")
+
+
 def _analyse(path: Path) -> Analysis:
     try:
         binary = loader.load(path)
@@ -61,7 +65,10 @@ def _analyse(path: Path) -> Analysis:
         return _refuse(path, NO_CODE, "no executable section")
 
     if binary.format == "pe":
-        writable = next((section.name for section in binary.sections if section.writable), None)
+        writable = next(
+            (section.name for section in binary.sections if section.writable and section.data),
+            None,
+        )
         if writable is not None:
             return _refuse(path, PACKED, f"executable section {writable} is writable")
 

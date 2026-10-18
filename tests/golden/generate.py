@@ -1,65 +1,52 @@
-#!/usr/bin/env python3
-#
-# Regenerates vectors.json. Run this only when a change to the digest is intended, and
-# review the diff before committing: every altered line means every stored digest in the
-# world has changed.
-#
-#     python tests/golden/generate.py
+# Rewrites vectors.json, only for an intended digest change: python tests/golden/generate.py
 
 from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from pathlib import Path
 
+from eous import _native, loader, toolchain
+
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))
-
-import reference  # noqa: E402
-from eous import _native, digest, loader, toolchain  # noqa: E402
-
 FIXTURES = HERE.parent / "fixtures" / "bin"
 VECTORS = HERE / "vectors.json"
 
-# A hand-written case, so a rebuilt fixture and an altered algorithm fail differently.
-SYNTHETIC_RUNS = (
-    ("push", "mov", "sub", "mov", "xor", "call", "add", "pop", "ret"),
-    ("mov", "test", "je", "lea", "mov", "call", "mov", "ret"),
-    ("xor", "inc", "cmp", "jne", "mov", "shl", "or", "and", "not", "ret"),
-)
+SYNTHETIC_CODE = (
+    "55 4889e5 4883ec20 48897df8 31c0 4801d8 5d c3 "
+    "4889f8 4885c0 488d4808 4889ca 48ffc2 4839c2 48d1e0 4809c8 4821d0 48f7d0 c3"
+).replace(" ", "")
 SYNTHETIC_TARGET = "pe64"
+SYNTHETIC_BITNESS = 64
 
 
 def build() -> dict[str, object]:
     files = []
     for path in sorted(FIXTURES.iterdir()):
-        raw = path.read_bytes()
         binary = loader.load(path)
-        found = reference.disassemble(binary.sections, binary.arch)
         sections = [section.data for section in binary.sections]
         files.append(
             {
                 "name": path.name,
-                "sha256": hashlib.sha256(raw).hexdigest(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "target": binary.target,
-                "decoded": found.total_decoded,
-                "runs": sum(len(run) >= reference.NGRAM for run in found.runs),
                 "digest": _native.digest(sections, loader.BITS[binary.arch], binary.target),
             }
         )
 
+    code = bytes.fromhex(SYNTHETIC_CODE)
     return {
-        "version": digest.VERSION,
-        "ngram": reference.NGRAM,
-        "permutations": digest.PERMUTATIONS,
-        "slot_bits": digest.SLOT_BITS,
+        "version": _native.VERSION,
+        "ngram": _native.NGRAM,
+        "permutations": _native.PERMUTATIONS,
+        "slot_bits": _native.SLOT_BITS,
         "engines": toolchain.engines(),
         "files": files,
         "synthetic": {
             "target": SYNTHETIC_TARGET,
-            "runs": [list(run) for run in SYNTHETIC_RUNS],
-            "digest": reference.digest(SYNTHETIC_RUNS, SYNTHETIC_TARGET),
+            "bitness": SYNTHETIC_BITNESS,
+            "code": SYNTHETIC_CODE,
+            "digest": _native.digest([code], SYNTHETIC_BITNESS, SYNTHETIC_TARGET),
         },
     }
 

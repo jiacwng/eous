@@ -22,12 +22,36 @@ COR20_FLAGS_OFFSET = 16
 COR20_NATIVE_OFFSET = 64
 COR20_IL_ONLY = 0x1
 
+DOS_HEADER_SIZE = 0x40
+DOS_LFANEW_OFFSET = 0x3C
+COFF_SECTION_COUNT_OFFSET = 6
+COFF_HEADER_END = 24
+SECTION_HEADER_SIZE = 40
+SECTION_RAW_SIZE_OFFSET = 16
+
 PE_ARCHES = {"I386": "x86", "AMD64": "x86-64"}
 ELF_ARCHES = {"I386": "x86", "X86_64": "x86-64"}
 
 BITS = {"x86": 32, "x86-64": 64}
 
 ENTROPY_CHUNK = 1 << 20
+
+SECTION_DATA_RATIO = 2
+
+PE_CONFIG = lief.PE.ParserConfig()
+PE_CONFIG.parse_signature = False
+PE_CONFIG.parse_exports = False
+PE_CONFIG.parse_imports = False
+PE_CONFIG.parse_rsrc = False
+PE_CONFIG.parse_reloc = False
+
+ELF_CONFIG = lief.ELF.ParserConfig()
+ELF_CONFIG.parse_dyn_symbols = False
+ELF_CONFIG.parse_symtab_symbols = False
+ELF_CONFIG.parse_symbol_versions = False
+ELF_CONFIG.parse_relocations = False
+ELF_CONFIG.parse_notes = False
+ELF_CONFIG.parse_overlay = False
 
 
 class LoaderError(Exception):
@@ -114,21 +138,30 @@ def load(path: Path) -> Binary:
     except OSError as exc:
         raise LoaderError(f"cannot read: {exc.strerror}") from exc
 
+    if raw[:2] != b"MZ" and raw[:4] != b"\x7fELF":
+        if lief.is_macho(list(raw[:32])):
+            raise UnsupportedFormatError("macho")
+        if lief.is_coff(path):
+            raise UnsupportedFormatError("coff")
+        raise LoaderError("no recognised container")
+
+    _check_pe_sections(raw)
     try:
-        parsed = lief.parse(raw)
+        parsed = _parse(raw)
     except Exception as exc:
         raise LoaderError(f"cannot parse: {exc}") from exc
 
     if parsed is None:
         raise LoaderError("no recognised container")
-
     if isinstance(parsed, lief.PE.Binary):
         return _load_pe(parsed, len(raw))
-    if isinstance(parsed, lief.ELF.Binary):
-        return _load_elf(parsed, len(raw))
+    return _load_elf(parsed, len(raw))
 
-    family = type(parsed).__module__.rsplit(".", 1)[-1].lower()
-    raise UnsupportedFormatError(family)
+
+def _parse(raw: bytes) -> lief.PE.Binary | lief.ELF.Binary | None:
+    if raw[:2] == b"MZ":
+        return lief.PE.parse(raw, PE_CONFIG)
+    return lief.ELF.parse(raw, ELF_CONFIG)
 
 
 def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
@@ -198,6 +231,27 @@ def _executable_segments(parsed: lief.ELF.Binary, size: int) -> list[Section]:
         )
         for index, segment in executable
     ]
+
+
+def _check_pe_sections(raw: bytes) -> None:
+    if len(raw) < DOS_HEADER_SIZE or raw[:2] != b"MZ":
+        return
+    header = struct.unpack_from("<I", raw, DOS_LFANEW_OFFSET)[0]
+    if header + COFF_HEADER_END > len(raw) or raw[header : header + 4] != b"PE\0\0":
+        return
+    count, _, _, _, optional_size = struct.unpack_from(
+        "<HIIIH", raw, header + COFF_SECTION_COUNT_OFFSET
+    )
+    table = header + COFF_HEADER_END + optional_size
+    end = min(table + SECTION_HEADER_SIZE * count, len(raw))
+    claimed = 0
+    for entry in range(table, end - SECTION_HEADER_SIZE + 1, SECTION_HEADER_SIZE):
+        raw_size, pointer = struct.unpack_from("<II", raw, entry + SECTION_RAW_SIZE_OFFSET)
+        claimed += min(raw_size, max(0, len(raw) - pointer))
+    if claimed > SECTION_DATA_RATIO * len(raw):
+        raise LoaderError(
+            f"sections overlap, {claimed} bytes of section data in a {len(raw)} byte file"
+        )
 
 
 def _check_overlap(regions: list[Any], size: int) -> None:

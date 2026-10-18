@@ -9,13 +9,15 @@ import io
 import json
 import os
 import sys
-from collections.abc import Generator, Iterator
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures.process import BrokenProcessPool
+from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from eous import digest, report, toolchain
+from eous import digest, toolchain
+
+if TYPE_CHECKING:
+    from eous import report
 
 OK = 0
 REFUSED = 1
@@ -62,18 +64,15 @@ examples:
   eous cross digests.txt --min 40
 
 reading a comparison:
-  similarity:  36.5% +/- 4.2 (32.3% to 40.6%)
-  containment: old.exe in new.exe   96.0% +/- 8.0
-               new.exe in old.exe   37.0% +/- 3.1
+  similarity:  36.5% +/- 4.2
+  containment: old.exe in new.exe   96.0%
+               new.exe in old.exe   37.0%
 
   The +/- figure is the margin of error, since 256 slots estimate the overlap.
-  It narrows as scores approach 100%. Two results whose ranges overlap are
-  not separable.
+  Two results whose ranges overlap are not separable.
 
   Containment runs both ways, and the gap between them says which side is the
-  superset. It comes from the same estimate, scaled by each file's size, so the
-  smaller file's figure carries the wider margin, and it grows with the size
-  difference. Above 4x both figures are withheld.
+  superset. Above a 4x size difference both figures are withheld.
 
 a refusal names its cause:
   eous: sample.macho:  unsupported_format: macho
@@ -126,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     match_command.add_argument("query", nargs="?", metavar="FILE-OR-DIGEST")
     match_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
     match_command.add_argument(
-        "--top", type=int, default=10, help="how many results to print, default 10"
+        "--top", type=_count, default=10, help="how many results to print, default 10"
     )
 
     cross_command = commands.add_parser(
@@ -134,14 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="score every pair in a file of digests",
         description="Score each digest in a file against every other, in the order they "
         "were read. The file is what `eous hash` writes. Pairs are scored inside each "
-        "target, since two digests compare only when their targets match.",
+        "target, since two digests compare only when their targets match, and the "
+        "targets follow in the order they first appear.",
     )
     cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
 
     for command in (match_command, cross_command):
         command.add_argument(
             "--min",
-            type=float,
+            type=_percentage,
             default=0.0,
             dest="minimum",
             metavar="PERCENT",
@@ -151,6 +151,20 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
+
+
+def _count(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("a count of 0 or more")
+    return value
+
+
+def _percentage(text: str) -> float:
+    value = float(text)
+    if not 0.0 <= value <= 100.0:
+        raise argparse.ArgumentTypeError("a percentage from 0 to 100")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -255,14 +269,10 @@ def _looks_like_a_path(text: str) -> bool:
 
 
 def _as_digest(text: str) -> tuple[str | None, int]:
-    path = Path(text)
-    if not os.path.isfile(path):
-        if _looks_like_a_path(text):
-            _warn(f"{_readable(text)}: no such file")
-            return (None, USAGE)
+    if not os.path.isfile(text) and not _looks_like_a_path(text):
         return (text, OK)
 
-    result = report.analyse(path)
+    [result] = _analyse([Path(text)])
     if result.refusal is not None:
         _warn(_refusal_line(result.path, result.refusal))
         return (None, REFUSED)
@@ -280,7 +290,8 @@ def _run_compare(args: argparse.Namespace) -> int:
         named.append(None if found is text else text)
 
     try:
-        scores = digest.compare(resolved[0], resolved[1])
+        left, right = (digest.parse(text) for text in resolved)
+        scores = digest.compare(left, right)
     except digest.DigestError as exc:
         _warn(str(exc))
         return USAGE
@@ -290,7 +301,7 @@ def _run_compare(args: argparse.Namespace) -> int:
             json.dumps(
                 {
                     "meta": _meta(),
-                    "target": digest.parse(resolved[0]).target,
+                    "target": left.target,
                     "comparison": _as_scores(scores, named),
                 },
                 indent=1,
@@ -333,13 +344,6 @@ def _read_digests(path: Path) -> tuple[list[str], list[digest.Sketch], int] | No
 
 
 def _run_match(args: argparse.Namespace) -> int:
-    if args.top < 0:
-        _warn("--top is a count of 0 or more")
-        return USAGE
-    if not 0.0 <= args.minimum <= 100.0:
-        _warn("--min is a percentage from 0 to 100")
-        return USAGE
-
     text, code = _as_digest(args.query)
     if text is None:
         return code
@@ -362,7 +366,8 @@ def _run_match(args: argparse.Namespace) -> int:
         return USAGE
 
     rows = digest.unpack_all([sketch for _, sketch in kept])
-    scored, spread = digest.score(rows, digest.unpack(query))
+    cardinalities = digest.cardinalities([sketch for _, sketch in kept])
+    scored, spread = digest.score(rows, cardinalities, digest.unpack(query), query.cardinality)
     order = sorted(
         zip(scored, spread, (label for label, _ in kept), strict=True), key=lambda row: -row[0]
     )
@@ -381,11 +386,7 @@ def _run_match(args: argparse.Namespace) -> int:
                     "unparsed": unparsed,
                     "below_minimum": below_minimum,
                     "matches": [
-                        {
-                            "label": label,
-                            "similarity": round(float(score), 4),
-                            "uncertainty": round(float(margin), 4),
-                        }
+                        {"label": label, **_rounded(score, margin)}
                         for score, margin, label in ranked
                     ],
                 },
@@ -411,10 +412,6 @@ def _by_target(sketches: list[digest.Sketch]) -> dict[str, list[int]]:
 
 
 def _run_cross(args: argparse.Namespace) -> int:
-    if not 0.0 <= args.minimum <= 100.0:
-        _warn("--min is a percentage from 0 to 100")
-        return USAGE
-
     read = _read_digests(args.known)
     if read is None:
         return USAGE
@@ -426,7 +423,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         return USAGE
 
     shown = [_readable(label) for label in labels]
-    targets = sorted(grouped)
+    targets = list(grouped)
     alone = len(sketches) - sum(len(grouped[target]) for target in targets)
     below_minimum = 0
     total = 0
@@ -447,9 +444,15 @@ def _run_cross(args: argparse.Namespace) -> int:
     for target in targets:
         members = grouped[target]
         rows = digest.unpack_all([sketches[index] for index in members])
+        cardinalities = digest.cardinalities([sketches[index] for index in members])
         for offset in range(len(members) - 1):
-            scores, spread = digest.score(rows[offset + 1 :], rows[offset])
             left = members[offset]
+            scores, spread = digest.score(
+                rows[offset + 1 :],
+                cardinalities[offset + 1 :],
+                rows[offset],
+                sketches[left].cardinality,
+            )
             total += len(scores)
             for step, (score, margin) in enumerate(zip(scores, spread, strict=True)):
                 if score < args.minimum:
@@ -463,8 +466,7 @@ def _run_cross(args: argparse.Namespace) -> int:
                                 "left": labels[left],
                                 "right": labels[right],
                                 "target": target,
-                                "similarity": round(float(score), 4),
-                                "uncertainty": round(float(margin), 4),
+                                **_rounded(score, margin),
                             }
                         )
                     )
@@ -486,19 +488,8 @@ def _scored(score: float, margin: float) -> str:
     return f"{float(score):5.1f}% +/- {float(margin):3.1f}"
 
 
-def _bounds(scores: digest.Scores) -> tuple[float, float]:
-    return (
-        max(0.0, scores.similarity - scores.uncertainty),
-        min(100.0, scores.similarity + scores.uncertainty),
-    )
-
-
 def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
-    low, high = _bounds(scores)
-    print(
-        f"similarity:  {scores.similarity:.1f}% +/- {scores.uncertainty:.1f} "
-        f"({low:.1f}% to {high:.1f}%)"
-    )
+    print(f"similarity:  {scores.similarity:.1f}% +/- {scores.uncertainty:.1f}")
 
     if scores.left_in_right is None or scores.right_in_left is None:
         ratio = f"{digest.MAX_CONTAINMENT_RATIO:g}x"
@@ -507,69 +498,31 @@ def _print_scores(scores: digest.Scores, labels: list[str]) -> None:
 
     left, right = (_readable(label) for label in labels)
     width = max(len(left), len(right))
-    print(
-        f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%"
-        f" +/- {scores.left_in_right_uncertainty:.1f}"
-    )
-    print(
-        f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%"
-        f" +/- {scores.right_in_left_uncertainty:.1f}"
-    )
+    print(f"containment: {left:<{width}} in {right:<{width}}  {scores.left_in_right:>5.1f}%")
+    print(f"             {right:<{width}} in {left:<{width}}  {scores.right_in_left:>5.1f}%")
+
+
+def _rounded(score: float, margin: float) -> dict[str, float]:
+    return {"similarity": round(float(score), 4), "uncertainty": round(float(margin), 4)}
 
 
 def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, object]:
     def rounded(value: float | None) -> float | None:
         return None if value is None else round(value, 4)
 
-    low, high = _bounds(scores)
     return {
         "left": labels[0],
         "right": labels[1],
-        "similarity": round(scores.similarity, 4),
-        "uncertainty": round(scores.uncertainty, 4),
-        "low": round(low, 4),
-        "high": round(high, 4),
+        **_rounded(scores.similarity, scores.uncertainty),
         "left_in_right": rounded(scores.left_in_right),
         "right_in_left": rounded(scores.right_in_left),
-        "left_in_right_uncertainty": rounded(scores.left_in_right_uncertainty),
-        "right_in_left_uncertainty": rounded(scores.right_in_left_uncertainty),
     }
 
 
 def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
-    if len(paths) < 2:
-        yield from (report.analyse(path) for path in paths)
-        return
+    from eous import pool, report
 
-    remaining = paths
-    while remaining:
-        finished = yield from _pooled(remaining)
-        if finished == len(remaining):
-            return
-        yield _alone(remaining[finished])
-        remaining = remaining[finished + 1 :]
-
-
-# A worker that dies breaks the whole pool, so the first file left unfinished is rerun alone
-# to learn whether it is the cause, and the rest continue in a fresh pool.
-def _pooled(paths: list[Path]) -> Generator[report.Analysis, None, int]:
-    finished = 0
-    with ProcessPoolExecutor() as pool:
-        try:
-            for result in pool.map(report.analyse, paths):
-                yield result
-                finished += 1
-        except BrokenProcessPool:
-            return finished
-    return finished
-
-
-def _alone(path: Path) -> report.Analysis:
-    with ProcessPoolExecutor(max_workers=1) as pool:
-        try:
-            return pool.submit(report.analyse, path).result()
-        except BrokenProcessPool:
-            return report.crashed(path)
+    return pool.analyse(paths, report.analyse)
 
 
 def _expand(paths: list[Path]) -> list[Path]:

@@ -5,6 +5,7 @@
 
 # environments
 .venv/
+.env
 
 # python
 __pycache__/
@@ -23,6 +24,7 @@ src/eous/_native*.pyd
 .ruff_cache/
 .mypy_cache/
 .coverage
+.coverage.*
 htmlcov/
 
 # IDE

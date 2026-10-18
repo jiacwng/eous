@@ -1,5 +1,7 @@
 # eous
 
+[![ci](https://github.com/jiacwng/eous/actions/workflows/ci.yml/badge.svg)](https://github.com/jiacwng/eous/actions/workflows/ci.yml)
+
 eous is a fuzzy hashing tool for executables. It is an alternative to ssdeep and tlsh. You run it against a
 PE or ELF binary on x86 or x86-64, and it produces a 512-bit hash of the program's code.
 
@@ -38,9 +40,9 @@ withheld beyond a 4x size difference:
 
 ```
 $ eous compare rg-14.0.0.exe rg-14.0.1.exe
-similarity:  95.8% +/- 1.4 (94.4% to 97.3%)
-containment: rg-14.0.0.exe in rg-14.0.1.exe   97.8% +/- 1
-             rg-14.0.1.exe in rg-14.0.0.exe   97.9% +/- 1
+similarity:  95.8% +/- 1.4
+containment: rg-14.0.0.exe in rg-14.0.1.exe   97.8%
+             rg-14.0.1.exe in rg-14.0.0.exe   97.9%
 ```
 
 **Match** one input against a collection, best first:

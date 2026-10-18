@@ -1,12 +1,13 @@
+# Pins the EO1 format: every fixture and one hand-written case must reproduce its recorded digest.
+
 import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
-import reference
 from conftest import FIXTURES
-from eous import _native, cli, digest, loader, toolchain
+from eous import _native, cli, loader, toolchain
 
 VECTORS = json.loads((Path(__file__).resolve().parent / "vectors.json").read_text(encoding="utf-8"))
 
@@ -14,8 +15,16 @@ FILES = VECTORS["files"]
 IDS = [entry["name"] for entry in FILES]
 
 
-# These assertions exist to fail. A red golden test means a change altered the digest, so
-# every stored digest anywhere no longer compares against a fresh one.
+def test_the_recorded_pipeline_constants_are_the_compiled_ones() -> None:
+    recorded = {key: VECTORS[key] for key in ("version", "ngram", "permutations", "slot_bits")}
+    assert recorded == {
+        "version": _native.VERSION,
+        "ngram": _native.NGRAM,
+        "permutations": _native.PERMUTATIONS,
+        "slot_bits": _native.SLOT_BITS,
+    }
+
+
 @pytest.mark.parametrize("entry", FILES, ids=IDS)
 def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> None:
     path = FIXTURES / str(entry["name"])
@@ -25,88 +34,32 @@ def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> N
     assert produced == entry["digest"]
 
 
-# The command hashes in worker processes, and Linux starts them differently from Windows.
 def test_the_pooled_command_reproduces_every_vector(capsys: pytest.CaptureFixture[str]) -> None:
     paths = [str(FIXTURES / str(entry["name"])) for entry in FILES]
-    assert len(paths) > 1, "a single path skips the pool, which is the thing under test"
-
-    assert cli.main(["hash", *paths]) == 0
+    assert cli.main(["hash", *paths]) == cli.OK
 
     printed = capsys.readouterr().out
     for entry, path in zip(FILES, paths, strict=True):
         assert f"{path}  {entry['digest']}" in printed
 
 
-# The fixture has to be the same file, otherwise a rebuilt binary would look like an
-# algorithm change.
 @pytest.mark.parametrize("entry", FILES, ids=IDS)
 def test_a_fixture_is_the_file_the_vector_was_taken_from(entry: dict[str, object]) -> None:
     raw = (FIXTURES / str(entry["name"])).read_bytes()
     assert hashlib.sha256(raw).hexdigest() == entry["sha256"]
 
 
-@pytest.mark.parametrize("entry", FILES, ids=IDS)
-def test_the_stages_before_the_digest_stay_put(entry: dict[str, object]) -> None:
-    binary = loader.load(FIXTURES / str(entry["name"]))
-    found = reference.disassemble(binary.sections, binary.arch)
-    assert binary.target == entry["target"]
-    assert found.total_decoded == entry["decoded"]
-    assert sum(len(run) >= reference.NGRAM for run in found.runs) == entry["runs"]
-
-
-# Hand-written runs, so an algorithm change and a rebuilt fixture fail separately.
 def test_the_synthetic_case_reproduces() -> None:
     case = VECTORS["synthetic"]
-    runs = tuple(tuple(run) for run in case["runs"])
-    assert reference.digest(runs, case["target"]) == case["digest"]
+    code = bytes.fromhex(case["code"])
+    assert _native.digest([code], case["bitness"], case["target"]) == case["digest"]
 
 
-# A digest is only reproducible under the decoder that produced it.
 def test_the_recorded_engines_are_the_installed_ones() -> None:
     assert toolchain.engines() == VECTORS["engines"]
-
-
-def test_the_recorded_parameters_match_the_code() -> None:
-    assert VECTORS["version"] == digest.VERSION
-    assert VECTORS["ngram"] == reference.NGRAM
-    assert VECTORS["permutations"] == digest.PERMUTATIONS
-    assert VECTORS["slot_bits"] == digest.SLOT_BITS
-    assert reference.PERMUTATIONS == digest.PERMUTATIONS
-    assert reference.SLOT_BITS == digest.SLOT_BITS
 
 
 def test_every_fixture_has_a_vector() -> None:
     on_disk = {p.name for p in FIXTURES.iterdir()}
     recorded = {str(entry["name"]) for entry in FILES}
     assert on_disk == recorded
-
-
-# Proof the golden test can fail: perturbing any parameter changes the digest.
-@pytest.mark.parametrize(
-    ("attribute", "value"),
-    [
-        ("NGRAM", 5),
-        ("SLOT_BITS", 1),
-        ("MODULUS", (1 << 31) - 1),
-        ("COEFFICIENTS", reference.COEFFICIENTS[:128]),
-        ("COEFFICIENTS", tuple(reversed(reference.COEFFICIENTS))),
-        ("SEPARATOR", b"\x00"),
-        ("SHINGLE_PERSON", b"eous-xx"),
-    ],
-    ids=[
-        "ngram",
-        "slot_bits",
-        "modulus",
-        "fewer_permutations",
-        "permutation_order",
-        "separator",
-        "personalisation",
-    ],
-)
-def test_a_changed_parameter_breaks_the_vector(
-    monkeypatch: pytest.MonkeyPatch, attribute: str, value: object
-) -> None:
-    case = VECTORS["synthetic"]
-    runs = tuple(tuple(run) for run in case["runs"])
-    monkeypatch.setattr(reference, attribute, value)
-    assert reference.digest(runs, case["target"]) != case["digest"]

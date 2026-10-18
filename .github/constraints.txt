@@ -1,0 +1,8 @@
+# The exact versions CI installs. Bump them in their own pull request.
+coverage==7.15.4
+maturin==1.15.0
+mypy==2.3.0
+numpy==2.5.1
+pytest==9.1.1
+pytest-cov==7.1.0
+ruff==0.16.2

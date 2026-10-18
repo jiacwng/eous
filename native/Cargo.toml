@@ -13,8 +13,12 @@ crate-type = ["cdylib"]
 [dependencies]
 blake2b_simd = "1.0.5"
 iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "decoder", "instr_info"] }
-pyo3 = { version = "0.29.3", features = ["extension-module", "abi3-py311"] }
+pyo3 = { version = "0.29.3", features = ["extension-module", "abi3-py312"], optional = true }
 serde_json = "1.0.154"
+
+[features]
+default = ["python"]
+python = ["dep:pyo3"]
 
 [profile.release]
 lto = true
