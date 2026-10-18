@@ -6,12 +6,13 @@ import subprocess
 import sys
 import time
 from functools import cache
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 
 from conftest import ELF64, JUNK, MACHO, PE32, PE64
-from eous import cli, digest, pool, report
+from eous import _native, cli, digest, pool, report
 
 CLEAN = PE64
 
@@ -259,7 +260,9 @@ def test_hash_without_a_file_is_a_usage_error(output: pytest.CaptureFixture[str]
 
 def test_version_prints_and_succeeds(output: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["--version"]) == cli.OK
-    assert output.readouterr().out.strip()
+    lines = output.readouterr().out.splitlines()
+    assert lines[0].startswith("eous ")
+    assert lines[1:] == [f"iced-x86 {_native.ICED_X86}", f"lief {version('lief')}"]
 
 
 def test_help_exits_zero_through_main(output: pytest.CaptureFixture[str]) -> None:
