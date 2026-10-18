@@ -1,6 +1,7 @@
 # PE and ELF parsing: the containers accepted, the ones refused, and the code they present.
 
 import struct
+import sys
 from pathlib import Path
 
 import lief
@@ -194,13 +195,44 @@ def test_a_parser_failure_becomes_a_loader_error(
 def test_a_file_that_cannot_be_read_becomes_a_loader_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def refuse(_: Path) -> bytes:
+    def refuse(*_: object) -> None:
         raise PermissionError(13, "Permission denied")
 
     target = tmp_path / "locked.bin"
     target.write_bytes(PE64.read_bytes())
-    monkeypatch.setattr(Path, "read_bytes", refuse)
+    monkeypatch.setattr(Path, "open", refuse)
     with pytest.raises(LoaderError, match="cannot read: Permission denied"):
+        loader.load(target)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a sparse file")
+def test_a_large_file_of_another_kind_is_refused_without_being_read(tmp_path: Path) -> None:
+    target = tmp_path / "disk.iso"
+    with target.open("wb") as handle:
+        handle.write(b"CD001")
+        handle.truncate(1 << 36)
+    with pytest.raises(LoaderError, match="no recognised container"):
+        loader.load(target)
+
+
+@pytest.mark.filterwarnings("error")
+def test_an_unknown_pe_optional_header_magic_is_refused(tmp_path: Path) -> None:
+    raw = bytearray(PE64.read_bytes())
+    header = struct.unpack_from("<I", raw, 0x3C)[0]
+    struct.pack_into("<H", raw, header + 24, 0xBEEF)
+    target = tmp_path / "magic.exe"
+    target.write_bytes(bytes(raw))
+    with pytest.raises(LoaderError, match="unknown header class"):
+        loader.load(target)
+
+
+@pytest.mark.filterwarnings("error")
+def test_an_unknown_elf_class_is_refused(tmp_path: Path) -> None:
+    raw = bytearray(ELF64.read_bytes())
+    raw[4] = 0xA3
+    target = tmp_path / "class.elf"
+    target.write_bytes(bytes(raw))
+    with pytest.raises(LoaderError):
         loader.load(target)
 
 

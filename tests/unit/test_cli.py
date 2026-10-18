@@ -325,6 +325,16 @@ def test_a_mistyped_path_is_refused_as_absent(
     assert f"{Path('no/such/file.exe')}: unreadable: file is absent" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a symlink needs privilege on Windows")
+def test_a_symlink_loop_is_refused_as_absent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a").symlink_to(tmp_path / "b")
+    (tmp_path / "b").symlink_to(tmp_path / "a")
+    assert cli.main(["hash", str(tmp_path / "a")]) == cli.REFUSED
+    assert "unreadable: file is absent" in capsys.readouterr().err
+
+
 def test_differing_targets_are_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["compare", str(PE64), str(ELF64)]) == cli.USAGE
     assert "different targets" in capsys.readouterr().err

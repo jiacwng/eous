@@ -31,6 +31,8 @@ SECTION_RAW_SIZE_OFFSET = 16
 
 PE_ARCHES = {"I386": "x86", "AMD64": "x86-64"}
 ELF_ARCHES = {"I386": "x86", "X86_64": "x86-64"}
+PE_BITS: dict[object, int] = {lief.PE.PE_TYPE.PE32: 32, lief.PE.PE_TYPE.PE32_PLUS: 64}
+ELF_BITS: dict[object, int] = {lief.ELF.Header.CLASS.ELF32: 32, lief.ELF.Header.CLASS.ELF64: 64}
 
 BITS = {"x86": 32, "x86-64": 64}
 
@@ -134,16 +136,17 @@ def load(path: Path) -> Binary:
         raise LoaderError("file is absent")
 
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as handle:
+            head = handle.read(32)
+            if head[:2] != b"MZ" and head[:4] != b"\x7fELF":
+                if lief.is_macho(list(head)):
+                    raise UnsupportedFormatError("macho")
+                if lief.is_coff(path):
+                    raise UnsupportedFormatError("coff")
+                raise LoaderError("no recognised container")
+            raw = head + handle.read()
     except OSError as exc:
         raise LoaderError(f"cannot read: {exc.strerror}") from exc
-
-    if raw[:2] != b"MZ" and raw[:4] != b"\x7fELF":
-        if lief.is_macho(list(raw[:32])):
-            raise UnsupportedFormatError("macho")
-        if lief.is_coff(path):
-            raise UnsupportedFormatError("coff")
-        raise LoaderError("no recognised container")
 
     _check_pe_sections(raw)
     try:
@@ -183,7 +186,7 @@ def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
     return Binary(
         format="pe",
         arch=arch,
-        bits=64 if parsed.optional_header.magic == lief.PE.PE_TYPE.PE32_PLUS else 32,
+        bits=_bits(lambda: parsed.optional_header.magic, PE_BITS),
         sections=_ordered(sections),
         is_il_only=is_il_only,
         has_managed_native=has_managed_native,
@@ -211,7 +214,7 @@ def _load_elf(parsed: lief.ELF.Binary, size: int) -> Binary:
     return Binary(
         format="elf",
         arch=arch,
-        bits=64 if parsed.header.identity_class == lief.ELF.Header.CLASS.ELF64 else 32,
+        bits=_bits(lambda: parsed.header.identity_class, ELF_BITS),
         sections=_ordered(sections),
         is_il_only=False,
         has_managed_native=False,
@@ -266,6 +269,15 @@ def _ordered(sections: list[Section]) -> tuple[Section, ...]:
 
 def _text(value: str | bytes) -> str:
     return value if isinstance(value, str) else value.decode("utf-8", "replace")
+
+
+def _bits(read: Callable[[], object], widths: dict[object, int]) -> int:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        value = read()
+    if value not in widths:
+        raise LoaderError(f"unknown header class {value}")
+    return widths[value]
 
 
 def _arch(read: Callable[[], object], arches: dict[str, str]) -> str:

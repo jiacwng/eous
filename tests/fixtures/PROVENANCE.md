@@ -15,7 +15,7 @@ reproduces the same files.
 
 ## Source
 
-`src/fixture.c` — a deterministic program: a xorshift generator fills a buffer,
+`src/fixture.c` is a deterministic program. A xorshift generator fills a buffer, and
 an FNV-1a checksum of the buffer is printed. Loops, branches, calls, shifts and
 multiplications give the disassembler varied instructions to read. Every run
 prints the same value, which doubles as a sanity check.
@@ -38,7 +38,7 @@ zig cc -target x86-linux-gnu     -O1 -s -o bin/fixture-elf-x86 src/fixture.c
 The ABI is explicit in each target triple so the same triple produces the same
 layout on any host. `-s` strips debug information: the PE pair would otherwise
 ship a `.pdb` file each, and every binary would carry symbol tables the tests
-ignore. The ELF pair links dynamically, keeping libc out of the file — tests
+ignore. The ELF pair links dynamically, keeping libc out of the file. The tests
 parse these binaries and leave them unexecuted, so runtime linking is free.
 Measured sizes: 72 KB and 82 KB for PE, 3.4 KB and 2.3 KB for ELF.
 
