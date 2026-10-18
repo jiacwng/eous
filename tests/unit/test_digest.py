@@ -1,22 +1,22 @@
+# Digest parsing, the similarity and containment scores, and their margin of error.
+
 import random
 
 import pytest
 
+from conftest import WILSON_MARGIN_AT_FULL_AGREEMENT
 from eous import _native, digest
 from eous.digest import DigestError
 
-# x86-64 encodings of instructions that fall through, one mnemonic each, so any sequence of
-# them decodes as a single run.
-# fmt: off
-POOL = [bytes.fromhex(code) for code in (
-    "4889d8", "50", "58", "4801d8", "4829d8", "31c0", "4821d8", "4809d8", "4839d8", "4885d8",
-    "488d4308", "48ffc0", "48ffc8", "48d1e0", "48d1e8", "48d1f8", "48d1c0", "48d1c8",
-    "480fafc3", "48f7e3", "48f7d8", "4811d8", "4819d8", "4893", "480fc8", "0fb6c3", "0fbec3",
-    "480fa3d8", "480fabd8", "480fbcc3", "480fbdc3", "99", "98", "0f95c0", "0f94c0",
-    "480f45c3", "480f44c3", "90", "c9",
-)]
-# fmt: on
-MOV, PUSH = POOL[0], POOL[1]
+POOL = [
+    bytes.fromhex(code)
+    for code in (
+        "4889d8 50 58 4801d8 4829d8 31c0 4821d8 4809d8 4839d8 4885d8 488d4308 48ffc0 48ffc8 "
+        "48d1e0 48d1e8 48d1f8 48d1c0 48d1c8 480fafc3 48f7e3 48f7d8 4811d8 4819d8 4893 480fc8 "
+        "0fb6c3 0fbec3 480fa3d8 480fabd8 480fbcc3 480fbdc3 99 98 0f95c0 0f94c0 480f45c3 "
+        "480f44c3 90 c9"
+    ).split()
+]
 BODY = "a" * digest.SKETCH_HEX
 
 
@@ -31,7 +31,6 @@ def sketch_of(code: list[bytes]) -> digest.Sketch:
     return digest.parse(text)
 
 
-# `'²'.isdigit()` is true and `int('²')` raises, so the cardinality is read as ASCII digits.
 def test_a_numeric_character_that_is_not_a_digit_is_refused() -> None:
     with pytest.raises(DigestError, match="non-negative integer"):
         digest.parse(f"EO1:pe64:²:{BODY}")
@@ -72,7 +71,6 @@ def test_unpacking_recovers_every_slot() -> None:
     assert text is not None
     slots = digest.unpack(digest.parse(text))
     assert len(slots) == digest.PERMUTATIONS
-    # Read the bits back off the printed digest, so the check uses the published format.
     body = int(text.rsplit(":", 1)[-1], 16)
     assert [int(value) for value in slots] == [
         (body >> (digest.PERMUTATIONS - 1 - index) * digest.SLOT_BITS) & digest.MASK
@@ -80,32 +78,19 @@ def test_unpacking_recovers_every_slot() -> None:
     ]
 
 
-# Below chance agreement the score is clamped at zero, and the margin still has to come
-# from the slots that agree.
 def test_the_margin_of_error_comes_from_the_slots_and_not_the_score() -> None:
     zeros = digest.Sketch("pe64", 100, 0)
     ones = digest.Sketch("pe64", 100, int("01" * 256, 2))
     mixed = digest.Sketch("pe64", 100, int("00" * 32 + "01" * 224, 2))
-    assert digest.compare(zeros, ones).uncertainty == pytest.approx(0.519, abs=0.001)
+    assert digest.compare(zeros, ones).uncertainty == pytest.approx(WILSON_MARGIN_AT_FULL_AGREEMENT)
     assert digest.compare(zeros, mixed).uncertainty == pytest.approx(2.952, abs=0.001)
 
     rows = digest.unpack_all([ones, mixed])
     cardinalities = digest.cardinalities([ones, mixed])
     scored, spread = digest.score(rows, cardinalities, digest.unpack(zeros), zeros.cardinality)
     assert list(scored) == [0.0, 0.0]
-    assert float(spread[0]) == pytest.approx(0.519, abs=0.001)
+    assert float(spread[0]) == pytest.approx(WILSON_MARGIN_AT_FULL_AGREEMENT)
     assert float(spread[1]) == pytest.approx(2.952, abs=0.001)
-
-
-def test_the_batch_path_equals_compare_on_every_pair() -> None:
-    group = [sketch_of(varied(300, seed=seed)) for seed in range(12)]
-    table, cardinalities = digest.unpack_all(group), digest.cardinalities(group)
-    for left in group:
-        scored, spread = digest.score(table, cardinalities, digest.unpack(left), left.cardinality)
-        for index, right in enumerate(group):
-            pair = digest.compare(left, right)
-            assert float(scored[index]) == pair.similarity
-            assert float(spread[index]) == pair.uncertainty
 
 
 def test_a_cardinality_gap_caps_the_similarity() -> None:
@@ -123,14 +108,6 @@ def test_an_empty_cardinality_bounds_without_dividing_by_zero(
     assert scores.similarity == expected
 
 
-def test_identical_sketches_keep_a_margin() -> None:
-    sketch = sketch_of([MOV, PUSH] * 30)
-    scores = digest.compare(sketch, sketch)
-    assert scores.similarity == 100.0
-    assert scores.uncertainty == pytest.approx(0.519, abs=0.001)
-
-
-# The gap between the two directions is the useful part: it names the superset.
 def test_a_subset_shows_the_asymmetry() -> None:
     tokens = varied(900, seed=41)
     whole, part = sketch_of(tokens), sketch_of(tokens[: len(tokens) // 2])

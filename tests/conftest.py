@@ -1,7 +1,9 @@
-# The fixture binaries and the hand-built containers the test files share.
+# The fixture binaries, the hand-built containers and the constants the test files share.
 
 import struct
 from pathlib import Path
+
+from eous import digest
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bin"
 PE64 = FIXTURES / "fixture-pe-x64.exe"
@@ -10,6 +12,8 @@ ELF64 = FIXTURES / "fixture-elf-x64"
 
 MACHO = struct.pack("<I", 0xFEEDFACF) + bytes(4096)
 JUNK = b"plain text, forever" * 20
+
+WILSON_MARGIN_AT_FULL_AGREEMENT = 100 / (digest.PERMUTATIONS + 1) / (1 - digest.FLOOR)
 
 
 def elf_header(machine: int) -> bytes:
@@ -21,8 +25,6 @@ def elf_header(machine: int) -> bytes:
     return bytes(header)
 
 
-# An ELF64 carrying one loadable executable segment, with the section table stripped. This is
-# the ordinary shape of a packed or hostile ELF.
 def stripped_elf(code: bytes) -> bytes:
     header = bytearray(elf_header(62))
     struct.pack_into("<Q", header, 24, 0x400078)

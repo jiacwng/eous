@@ -1,3 +1,5 @@
+# The worker pool: a memory limit per worker and a worker replaced after it dies.
+
 import sys
 from pathlib import Path
 

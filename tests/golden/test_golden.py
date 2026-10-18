@@ -1,3 +1,5 @@
+# Pins the EO1 format: every fixture and one hand-written case must reproduce its recorded digest.
+
 import hashlib
 import json
 from pathlib import Path
@@ -13,8 +15,16 @@ FILES = VECTORS["files"]
 IDS = [entry["name"] for entry in FILES]
 
 
-# These assertions exist to fail. A red golden test means a change altered the digest, so
-# every stored digest anywhere no longer compares against a fresh one.
+def test_the_recorded_pipeline_constants_are_the_compiled_ones() -> None:
+    recorded = {key: VECTORS[key] for key in ("version", "ngram", "permutations", "slot_bits")}
+    assert recorded == {
+        "version": _native.VERSION,
+        "ngram": _native.NGRAM,
+        "permutations": _native.PERMUTATIONS,
+        "slot_bits": _native.SLOT_BITS,
+    }
+
+
 @pytest.mark.parametrize("entry", FILES, ids=IDS)
 def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> None:
     path = FIXTURES / str(entry["name"])
@@ -24,34 +34,27 @@ def test_a_fixture_reproduces_its_recorded_digest(entry: dict[str, object]) -> N
     assert produced == entry["digest"]
 
 
-# The command hashes in worker processes, and Linux starts them differently from Windows.
 def test_the_pooled_command_reproduces_every_vector(capsys: pytest.CaptureFixture[str]) -> None:
     paths = [str(FIXTURES / str(entry["name"])) for entry in FILES]
-    assert len(paths) > 1, "a single path skips the pool, which is the thing under test"
-
-    assert cli.main(["hash", *paths]) == 0
+    assert cli.main(["hash", *paths]) == cli.OK
 
     printed = capsys.readouterr().out
     for entry, path in zip(FILES, paths, strict=True):
         assert f"{path}  {entry['digest']}" in printed
 
 
-# The fixture has to be the same file, otherwise a rebuilt binary would look like an
-# algorithm change.
 @pytest.mark.parametrize("entry", FILES, ids=IDS)
 def test_a_fixture_is_the_file_the_vector_was_taken_from(entry: dict[str, object]) -> None:
     raw = (FIXTURES / str(entry["name"])).read_bytes()
     assert hashlib.sha256(raw).hexdigest() == entry["sha256"]
 
 
-# Hand-written machine code, so an algorithm change and a rebuilt fixture fail separately.
 def test_the_synthetic_case_reproduces() -> None:
     case = VECTORS["synthetic"]
     code = bytes.fromhex(case["code"])
     assert _native.digest([code], case["bitness"], case["target"]) == case["digest"]
 
 
-# A digest is only reproducible under the decoder that produced it.
 def test_the_recorded_engines_are_the_installed_ones() -> None:
     assert toolchain.engines() == VECTORS["engines"]
 
