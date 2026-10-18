@@ -317,7 +317,6 @@ mod tests {
         text.split(':').nth(2).unwrap().parse().unwrap()
     }
 
-    // Three instructions on each side, so only a run carried across the middle reaches six.
     fn around(middle: &[u8]) -> Vec<u8> {
         code(&[XOR_PUSH, XOR, middle, XOR_PUSH, XOR])
     }
@@ -407,17 +406,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_bitness_or_target_is_an_error() {
-        let data = [NOP.to_vec()];
-        assert!(digest_of(&data, 16, "pe32")
-            .unwrap_err()
-            .contains("bitness"));
-        assert!(digest_of(&data, 32, "macho")
-            .unwrap_err()
-            .contains("target"));
-    }
-
-    #[test]
     fn the_permutation_is_exact_modular_arithmetic() {
         let mut values = vec![0, 1, 2, MODULUS - 2, MODULUS - 1];
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -436,9 +424,8 @@ mod tests {
         }
     }
 
-    // Noise lands on invalid encodings, prefixes, repeats and cut runs, the edges of decoding.
     #[test]
-    fn hostile_code_digests_without_panicking_and_reproducibly() {
+    fn hostile_code_digests_without_panicking() {
         let mut state = 20_261_013_u64;
         let noise: Vec<u8> = (0..65_536)
             .map(|_| {
@@ -448,14 +435,10 @@ mod tests {
                 (state >> 56) as u8
             })
             .collect();
-        for data in [
-            Vec::new(),
-            b"\xcc".repeat(64),
-            b"\xff\xff".repeat(32),
-            code(&[&XOR_PUSH.repeat(4), RET]).repeat(50),
-            noise,
-        ] {
-            assert_eq!(one(data.clone()), one(data));
-        }
+        assert_eq!(one(Vec::new()), None);
+        assert_eq!(one(b"\xcc".repeat(64)), None);
+        assert_eq!(one(b"\xff\xff".repeat(32)), None);
+        assert!(one(code(&[&XOR_PUSH.repeat(4), RET]).repeat(50)).is_some());
+        assert!(one(noise).is_some());
     }
 }

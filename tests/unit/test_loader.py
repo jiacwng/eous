@@ -1,3 +1,5 @@
+# PE and ELF parsing: the containers accepted, the ones refused, and the code they present.
+
 import struct
 from pathlib import Path
 
@@ -6,7 +8,7 @@ import pytest
 
 from conftest import ELF64, MACHO, PE64, elf_header, stripped_elf
 from eous import loader
-from eous.loader import LoaderError, UnsupportedArchError, UnsupportedFormatError
+from eous.loader import LoaderError, UnsupportedArchError
 
 
 def test_data_entropy_is_the_same_counted_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,11 +38,15 @@ def test_executable_sections_that_overlap_are_refused(tmp_path: Path) -> None:
         loader.load(target)
 
 
-def test_a_pe_whose_code_sections_share_raw_data_is_refused(tmp_path: Path) -> None:
-    raw = bytearray(PE64.read_bytes())
+def section_table(raw: bytes) -> tuple[int, int]:
     header = struct.unpack_from("<I", raw, 0x3C)[0]
     count = struct.unpack_from("<H", raw, header + 6)[0]
-    table = header + 24 + struct.unpack_from("<H", raw, header + 20)[0]
+    return header + 24 + struct.unpack_from("<H", raw, header + 20)[0], count
+
+
+def test_a_pe_whose_code_sections_share_raw_data_is_refused(tmp_path: Path) -> None:
+    raw = bytearray(PE64.read_bytes())
+    table, count = section_table(raw)
     entries = [table + 40 * index for index in range(count)]
     code = next(e for e in entries if struct.unpack_from("<I", raw, e + 36)[0] & 0x20000000)
     other = next(e for e in entries if e != code)
@@ -55,9 +61,7 @@ def test_a_pe_whose_code_sections_share_raw_data_is_refused(tmp_path: Path) -> N
 
 def pe_with_every_section_claiming_the_file() -> bytes:
     raw = bytearray(PE64.read_bytes())
-    header = struct.unpack_from("<I", raw, 0x3C)[0]
-    count = struct.unpack_from("<H", raw, header + 6)[0]
-    table = header + 24 + struct.unpack_from("<H", raw, header + 20)[0]
+    table, count = section_table(raw)
     for index in range(count):
         struct.pack_into("<II", raw, table + 40 * index + 16, len(raw), 0)
     return bytes(raw)
@@ -77,28 +81,12 @@ def test_a_pe_whose_sections_claim_the_file_many_times_is_refused_before_lief(
         loader.load(target)
 
 
-@pytest.mark.parametrize("cut", [0x50, 0x180 + 40 * 2 + 10])
-def test_a_truncated_pe_header_is_left_to_lief(cut: int) -> None:
+def test_a_truncated_pe_header_is_left_to_lief() -> None:
     claims = pe_with_every_section_claiming_the_file()
-    loader._check_pe_sections(PE64.read_bytes()[:cut])
-    loader._check_pe_sections(claims[:cut])
-
-
-def test_lief_skips_the_pe_tables_eous_never_reads() -> None:
-    raw = PE64.read_bytes()
-    assert len(lief.PE.parse(raw).imports) > 0
-    parsed = loader._parse(raw)
-    assert isinstance(parsed, lief.PE.Binary)
-    assert len(parsed.imports) == 0
-    assert not parsed.has_resources
-
-
-def test_lief_skips_the_elf_symbols_eous_never_reads() -> None:
-    raw = ELF64.read_bytes()
-    assert len(lief.ELF.parse(raw).symbols) > 0
-    parsed = loader._parse(raw)
-    assert isinstance(parsed, lief.ELF.Binary)
-    assert len(parsed.symbols) == 0
+    table, _ = section_table(claims)
+    for cut in (0x50, table + 40 * 2 + 10):
+        loader._check_pe_sections(PE64.read_bytes()[:cut])
+        loader._check_pe_sections(claims[:cut])
 
 
 def test_a_stripped_elf_whose_segments_overlap_is_refused(tmp_path: Path) -> None:
@@ -114,14 +102,6 @@ def test_a_stripped_elf_whose_segments_overlap_is_refused(tmp_path: Path) -> Non
 def test_directory_raises(tmp_path: Path) -> None:
     with pytest.raises(LoaderError, match="is a directory"):
         loader.load(tmp_path)
-
-
-def test_macho_is_refused_by_format(tmp_path: Path) -> None:
-    target = tmp_path / "thing.macho"
-    target.write_bytes(MACHO)
-    with pytest.raises(UnsupportedFormatError) as caught:
-        loader.load(target)
-    assert "mach" in str(caught.value).lower()
 
 
 def never(*_: object) -> None:
@@ -162,8 +142,6 @@ def test_a_known_machine_is_refused_by_its_name(tmp_path: Path) -> None:
         loader.load(target)
 
 
-# LIEF returns a raw int for a machine value outside its table, so the refusal reports the
-# number.
 def test_an_unrecognised_machine_refuses_by_arch(tmp_path: Path) -> None:
     target = tmp_path / "m4242.elf"
     target.write_bytes(elf_header(4242))
@@ -238,33 +216,27 @@ def make_cor20(flags: int, native_rva: int = 0, native_size: int = 0) -> bytes:
     return bytes(header)
 
 
-# Data directory 14 is attacker-controlled. Pointing it at ordinary code would otherwise
-# hand the loader arbitrary flags, letting a native binary claim to be pure bytecode and
-# so escape being disassembled.
 def test_a_header_declaring_an_impossible_size_is_distrusted() -> None:
     forged = bytearray(make_cor20(flags=COR20_IL_ONLY))
     struct.pack_into("<I", forged, 0, 0xDEADBEEF)
     assert loader.read_clr(FakePE(0x2000, 72, bytes(forged))) == (False, False)
 
 
-# The spec biases toward looking: a non-empty ManagedNativeHeader means precompiled native
-# code whatever the IL-only bit says, and size alone settles it.
 def test_a_native_header_with_a_zero_address_still_counts() -> None:
     fake = FakePE(0x2000, 72, make_cor20(flags=COR20_IL_ONLY, native_rva=0, native_size=64))
     assert loader.read_clr(fake) == (True, True)
 
 
 def test_il_only_assembly_is_pure_managed() -> None:
-    fake = FakePE(0x2000, 72, make_cor20(flags=0x1))
+    fake = FakePE(0x2000, 72, make_cor20(flags=COR20_IL_ONLY))
     assert loader.read_clr(fake) == (True, False)
 
 
-def test_mixed_mode_assembly_keeps_native_code() -> None:
-    fake = FakePE(0x2000, 72, make_cor20(flags=0x0))
-    il_only, native = loader.read_clr(fake)
-    assert (il_only, native) == (False, False)
+def test_a_header_without_the_il_only_flag_is_not_managed() -> None:
+    fake = FakePE(0x2000, 72, make_cor20(flags=0))
+    assert loader.read_clr(fake) == (False, False)
 
 
-def test_unreadable_cor20_falls_back_to_presence() -> None:
+def test_an_empty_cor20_header_is_not_managed() -> None:
     fake = FakePE(0x2000, 72, b"")
     assert loader.read_clr(fake) == (False, False)

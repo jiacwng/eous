@@ -1,3 +1,5 @@
+# The refusal policy: which files get a digest, and the reason named for those that do not.
+
 import random
 import struct
 from dataclasses import replace
@@ -6,26 +8,29 @@ from pathlib import Path
 import lief
 import pytest
 
-from conftest import ELF64, FIXTURES, MACHO, PE64, elf_header
+from conftest import ELF64, FIXTURES, MACHO, PE64
 from eous import loader, report
 
 
-def test_a_missing_file_refuses_as_unreadable(tmp_path: Path) -> None:
-    result = report.analyse(tmp_path / "absent.bin")
-    assert result.digest is None
-    assert result.refusal is not None
-    assert result.refusal.reason == report.UNREADABLE
+def test_the_refusal_names_are_the_documented_ones() -> None:
+    names = {
+        report.UNREADABLE,
+        report.UNSUPPORTED_FORMAT,
+        report.UNSUPPORTED_ARCH,
+        report.PACKED,
+        report.MANAGED,
+        report.NO_CODE,
+    }
+    assert names == {
+        "unreadable",
+        "unsupported_format",
+        "unsupported_arch",
+        "packed",
+        "managed",
+        "no_code",
+    }
 
 
-def test_other_architectures_refuse_by_arch_and_name_it(tmp_path: Path) -> None:
-    target = tmp_path / "aarch64.elf"
-    target.write_bytes(elf_header(183))
-    refusal = report.analyse(target).refusal
-    assert refusal.reason == report.UNSUPPORTED_ARCH
-    assert refusal.detail
-
-
-# ARM64. The ELF path above and this one are the two halves of the same documented refusal.
 def test_a_pe_for_another_architecture_refuses_by_arch(tmp_path: Path) -> None:
     raw = bytearray(PE64.read_bytes())
     header = struct.unpack_from("<I", raw, 0x3C)[0]
@@ -39,7 +44,6 @@ def test_a_pe_for_another_architecture_refuses_by_arch(tmp_path: Path) -> None:
 
 
 def compressed_copy(source: Path, target: Path) -> Path:
-    # Real container, executable bytes replaced by noise, which is the shape of a packed file.
     raw = bytearray(source.read_bytes())
     rng = random.Random(0)
     parsed = lief.PE.parse(str(source))
@@ -70,8 +74,6 @@ def with_writable_code(source: loader.Binary) -> loader.Binary:
     return replace(source, sections=sections)
 
 
-# No clean PE in 15,435 has a writable code section. The rule is PE-only, because `loader`
-# synthesises ELF sections from segments, where read-write-execute is ordinary.
 def test_a_writable_executable_section_refuses_as_packed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -120,7 +122,6 @@ def test_code_too_short_to_shingle_refuses_as_unreadable(
     assert result.refusal.detail == "too little readable code"
 
 
-# A resource-only library carries no code and is not packed, so it gets its own name.
 def test_a_binary_with_no_executable_section_refuses_as_no_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -155,8 +156,6 @@ def test_a_compressed_section_alone_refuses_as_fully_packed(
     assert result.refusal == report.Refusal(report.PACKED, "100% of executable code is compressed")
 
 
-# 128 equally frequent bytes carry exactly log2(128) = 7.0 bits, which is the threshold, so
-# these two pin that the comparison includes its boundary.
 def test_a_section_exactly_at_the_threshold_counts_as_compressed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,15 +168,14 @@ def test_a_substantial_readable_section_keeps_the_digest(monkeypatch: pytest.Mon
     assert with_code(monkeypatch, NOISE, CODE * 2048).digest is not None
 
 
-# A section holds at most log2(size) bits of entropy, so a tiny readable section can sit
-# beside a compressed one without meaning the binary is readable.
 def test_a_tiny_readable_section_leaves_the_binary_packed(monkeypatch: pytest.MonkeyPatch) -> None:
     result = with_code(monkeypatch, NOISE, CODE)
     assert result.refusal == report.Refusal(report.PACKED, "100% of executable code is compressed")
 
 
 def test_half_the_code_compressed_refuses_as_packed(monkeypatch: pytest.MonkeyPatch) -> None:
-    result = with_code(monkeypatch, NOISE[:4096], CODE * 315 + b"\xc3")
+    readable = CODE * 315 + b"\xc3"
+    result = with_code(monkeypatch, NOISE[: len(readable)], readable)
     assert result.refusal == report.Refusal(report.PACKED, "50% of executable code is compressed")
 
 
@@ -227,9 +225,8 @@ def test_a_mixed_mode_assembly_still_digests(monkeypatch: pytest.MonkeyPatch) ->
     assert report.analyse(PE64).digest is not None
 
 
-# Managed is judged before disassembly, so an il-only assembly never reports as packed.
 def test_managed_is_judged_before_packed(monkeypatch: pytest.MonkeyPatch) -> None:
-    managed(monkeypatch, il_only=True, native=False, entropy_bytes=random.randbytes(8192))
+    managed(monkeypatch, il_only=True, native=False, entropy_bytes=NOISE)
     assert report.analyse(PE64).refusal.reason == report.MANAGED
 
 

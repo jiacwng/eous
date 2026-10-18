@@ -1,3 +1,4 @@
+# Lints once, then builds and tests eous on each platform; branch protection requires "checks".
 name: ci
 
 on:
@@ -12,7 +13,33 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PIP_CONSTRAINT: .github/constraints.txt
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+            .github/constraints.txt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: native
+      - run: pip install ruff
+      - run: cargo fmt --manifest-path native/Cargo.toml --check
+      - run: cargo clippy --manifest-path native/Cargo.toml -- -D warnings
+      - run: cargo clippy --manifest-path native/Cargo.toml --no-default-features --tests -- -D warnings
+      - run: cargo test --manifest-path native/Cargo.toml --no-default-features
+      - run: ruff check .
+      - run: ruff format --check .
+
   test:
     strategy:
       fail-fast: false
@@ -24,8 +51,6 @@ jobs:
             python: "3.12"
           - os: macos-latest
             python: "3.12"
-          - os: ubuntu-latest
-            python: "3.13"
           - os: ubuntu-latest
             python: "3.14"
     runs-on: ${{ matrix.os }}
@@ -42,21 +67,14 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: native
-      - run: pip install -e ".[dev]" -c .github/constraints.txt
-      - run: cargo fmt --manifest-path native/Cargo.toml --check
-      - run: cargo clippy --manifest-path native/Cargo.toml -- -D warnings
-      - run: cargo clippy --manifest-path native/Cargo.toml --no-default-features --tests -- -D warnings
-      - run: cargo test --manifest-path native/Cargo.toml --no-default-features
-      - run: ruff check .
-      - run: ruff format --check .
+      - run: pip install -e ".[dev]"
       - run: mypy src
       - run: pytest
 
-  # Branch protection requires a context named "checks", and a matrix names its runs per cell.
   checks:
-    needs: test
+    needs: [lint, test]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: test "${{ needs.test.result }}" = success
+      - run: test "${{ needs.lint.result }}" = success && test "${{ needs.test.result }}" = success

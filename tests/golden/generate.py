@@ -1,10 +1,4 @@
-#!/usr/bin/env python3
-#
-# Regenerates vectors.json. Run this only when a change to the digest is intended, and
-# review the diff before committing: every altered line means every stored digest in the
-# world has changed.
-#
-#     python tests/golden/generate.py
+# Rewrites vectors.json, only for an intended digest change: python tests/golden/generate.py
 
 from __future__ import annotations
 
@@ -18,7 +12,6 @@ HERE = Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures" / "bin"
 VECTORS = HERE / "vectors.json"
 
-# A hand-written x86-64 case, so a rebuilt fixture and an altered algorithm fail differently.
 SYNTHETIC_CODE = (
     "55 4889e5 4883ec20 48897df8 31c0 4801d8 5d c3 "
     "4889f8 4885c0 488d4808 4889ca 48ffc2 4839c2 48d1e0 4809c8 4821d0 48f7d0 c3"
