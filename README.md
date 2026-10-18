@@ -20,10 +20,11 @@ EO1:pe32:40045:780e1dde12b1bc2283e0bb3e4f33fb2cfe5e4a69e95ef4ef03a523b3ee...
 ## Install
 
 ```
-pip install https://github.com/jiacwng/eous/releases/download/v0.1.0/eous-0.1.0-py3-none-any.whl
+pip install eous
 ```
 
-Python 3.11 or later. LIEF parses PE and ELF, iced-x86 disassembles, numpy is used for MinHash and arithmetic.
+Python 3.12 or later. LIEF parses PE and ELF, iced-x86 disassembles in a native Rust module,
+numpy does the scoring arithmetic.
 
 ## Usage
 
@@ -79,43 +80,54 @@ no executable section (`no_code`).
 
 ## Results
 
-eous was tested on 26 open-source programs, 599 binaries: 274 PE and 325 ELF, against ssdeep, tlsh, only imports and size as a baseline. A pair is related when both
-binaries build from the same program.
-The metrics are: **AUC**, the area under the ROC curve. **P@1**, precision at rank one. **MRR**, mean reciprocal rank.
-**Recall at 1% FPR**, The false positive rate is the share of unrelated pairs a threshold
-wrongly accepts. **Cross-compiler P@1**, which restricts P@1 to one source version built by another compiler, or
-against another C library, on a subset of 37 PE pairs and 74 ELF pairs.
+eous was tested on 31 open-source programs, 426 binaries: 246 PE and 180 ELF, against ssdeep,
+tlsh, file size and import-based baselines. A pair is related when both binaries build from
+the same program. The metrics are AUC, the area under the ROC curve, and P@1, precision at
+rank one. File size alone reaches AUC 0.914, so every figure is reported beside it.
 
-PE, 19,788 pairs:
+PE, 246 binaries:
 
-| tool | AUC | P@1 | MRR | recall at 1% FPR | cross-compiler P@1 |
-|---|---|---|---|---|---|
-| imports | 0.965 | 1.000 | 1.000 | 0.650 | 0.770 |
-| **eous** | 0.949 | 0.982 | 0.988 | 0.347 | **0.973** |
-| tlsh | 0.940 | 0.964 | 0.975 | 0.429 | 0.689 |
-| size | 0.894 | 0.803 | 0.862 | 0.209 | 0.676 |
-| imphash | 0.621 | 0.686 | 0.689 | 0.243 | 0.514 |
-| ssdeep | 0.512 | 0.193 | 0.200 | 0.024 | 0.270 |
+| tool | AUC | P@1 |
+|---|---|---|
+| imports | 0.946 | 0.943 |
+| **eous** | **0.947** | 0.927 |
+| tlsh | 0.943 | 0.931 |
+| size | 0.908 | 0.724 |
+| imphash | 0.632 | 0.724 |
+| ssdeep | 0.560 | 0.313 |
 
-ELF, 35,364 pairs:
+ELF, 180 binaries:
 
-| tool | AUC | P@1 | MRR | recall at 1% FPR | cross-compiler P@1 |
-|---|---|---|---|---|---|
-| tlsh | 0.972 | 0.994 | 0.995 | 0.717 | 0.892 |
-| **eous** | 0.956 | 0.975 | 0.986 | 0.626 | **0.980** |
-| size | 0.952 | 0.843 | 0.892 | 0.390 | 0.527 |
-| ssdeep | 0.519 | 0.172 | 0.178 | 0.037 | 0.162 |
+| tool | AUC | P@1 |
+|---|---|---|
+| telfhash | 0.942 | 0.797 |
+| tlsh | 0.935 | 0.992 |
+| size | 0.917 | 0.828 |
+| imports | 0.913 | 0.992 |
+| **eous** | 0.897 | 0.922 |
+| ssdeep | 0.503 | 0.141 |
 
-imports and telfhash read 139 and 218 of the 325 ELF binaries, the rest being statically
-linked, too few to rank on.
+On ELF, telfhash reads 96% of the binaries and imports 71%, the rest being statically
+linked. P@1 is measured on the 128-file set all backends cover.
+
+The case eous is built for is cross-compiler similarity, one source built by a different
+compiler or against another C library. On the 31 such PE pairs eous reaches AUC 0.976,
+against imports 0.863, size 0.852 and tlsh 0.848.
 
 ## Limits
 
-- eous reads native code, so it refuses anything it cannot disassemble. On a feed of 200
-  malware samples it produced 107 digests. It refused 65 as .NET and 28 as packed. A
-  pipeline using eous alone therefore needs a second tool for those two cases.
-- If eous were to accept packed files, packers would leave the unpacking stub as the only readable code, so unrelated programs packed the same way share one digest.
-- Tested on 26 open-source programs only, the tuning of a few constants were made on another dataset to ensure portability.
+- eous reads native code, so it refuses anything it cannot disassemble. On 2250 malware
+  samples from MalwareBazaar it produced 1673 digests and refused 577: 296 as .NET bytecode
+  and 279 as packed. A pipeline using eous alone needs a second tool for those two cases.
+- If eous accepted packed files, the packer would leave only its unpacking stub as readable
+  code, so unrelated programs packed the same way would share one digest.
+- ELF is the weaker target. eous reaches AUC 0.897 against telfhash 0.942, and on distant
+  versions 0.597 against telfhash 0.923.
+- Go binaries carry the Go runtime, so two unrelated Go programs reach a median similarity
+  of 35%, measured on 10 programs. On Go, tlsh separates programs better: AUC 0.998 against
+  0.978 for eous.
+- Tested on 31 open-source programs. A few constants were tuned on a separate dataset so the
+  thresholds do not fit the test set.
 
 ## Output format
 
