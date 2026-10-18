@@ -5,7 +5,7 @@ updates:
     schedule:
       interval: weekly
 
-  # iced-x86, lief and numpy stay ungrouped: a decoder bump moves every digest.
+  # lief and numpy stay ungrouped: a parser bump can move a digest.
   - package-ecosystem: pip
     directory: "/"
     schedule:
@@ -16,3 +16,9 @@ updates:
           - "pytest*"
           - "ruff"
           - "mypy"
+
+  # iced-x86 is pinned exactly, so its bump PR is the signal to regenerate the vectors.
+  - package-ecosystem: cargo
+    directory: "/native"
+    schedule:
+      interval: monthly

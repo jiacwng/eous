@@ -1,0 +1,7 @@
+# the versions CI installs; bump deliberately, not mid-merge
+coverage==7.15.4
+mypy==2.3.0
+numpy==2.5.1
+pytest==9.1.1
+pytest-cov==7.1.0
+ruff==0.16.2
