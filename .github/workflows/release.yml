@@ -1,5 +1,4 @@
-# Builds the wheels and the sdist, tests each wheel on its own platform, and uploads them
-# with Trusted Publishing: to TestPyPI on a manual run, to PyPI when a release is published.
+# Builds and tests the wheels and the sdist; publishes to TestPyPI by hand and to PyPI on a release.
 name: release
 
 on:
@@ -38,13 +37,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           manylinux: "2_28"
           args: --release --out dist
-      - run: pip install dist/*.whl "iced-x86==1.21.0" pytest pytest-cov
+      - run: pip install dist/*.whl pytest pytest-cov
         shell: bash
       - run: python -c "import eous._native as native; print(native.__file__)"
       - run: pytest --no-cov
@@ -98,8 +97,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - run: test -f "dist/eous-${TAG#v}.tar.gz"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-      - run: gh release upload "$TAG" dist/*.whl dist/*.tar.gz --repo "$GITHUB_REPOSITORY"
+      - run: |
+          for attempt in 1 2 3; do
+            gh release upload "$TAG" dist/*.whl dist/*.tar.gz --clobber --repo "$GITHUB_REPOSITORY" && exit 0
+            sleep 15
+          done
+          exit 1
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
