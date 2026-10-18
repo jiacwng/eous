@@ -133,7 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="score every pair in a file of digests",
         description="Score each digest in a file against every other, in the order they "
         "were read. The file is what `eous hash` writes. Pairs are scored inside each "
-        "target, since two digests compare only when their targets match.",
+        "target, since two digests compare only when their targets match, and the "
+        "targets follow in the order they first appear.",
     )
     cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
 
@@ -268,14 +269,10 @@ def _looks_like_a_path(text: str) -> bool:
 
 
 def _as_digest(text: str) -> tuple[str | None, int]:
-    path = Path(text)
-    if not os.path.isfile(path):
-        if _looks_like_a_path(text):
-            _warn(f"{_readable(text)}: no such file")
-            return (None, USAGE)
+    if not os.path.isfile(text) and not _looks_like_a_path(text):
         return (text, OK)
 
-    [result] = _analyse([path])
+    [result] = _analyse([Path(text)])
     if result.refusal is not None:
         _warn(_refusal_line(result.path, result.refusal))
         return (None, REFUSED)
@@ -426,7 +423,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         return USAGE
 
     shown = [_readable(label) for label in labels]
-    targets = sorted(grouped)
+    targets = list(grouped)
     alone = len(sketches) - sum(len(grouped[target]) for target in targets)
     below_minimum = 0
     total = 0
