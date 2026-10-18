@@ -356,7 +356,7 @@ def explode(path: Path) -> object:
 def test_an_unexpected_failure_exits_three(
     monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli.report, "analyse", explode)
+    monkeypatch.setattr(report, "analyse", explode)
     assert cli.main(["hash", str(CLEAN)]) == cli.INTERNAL
     assert "something gave way" in output.readouterr().err
 
@@ -374,7 +374,7 @@ def hostile_refusal(path: Path) -> report.Analysis:
 def test_a_section_name_cannot_forge_a_refusal_line(
     monkeypatch: pytest.MonkeyPatch, output: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli.report, "analyse", hostile_refusal)
+    monkeypatch.setattr(report, "analyse", hostile_refusal)
     assert cli.main(["hash", str(CLEAN)]) == cli.REFUSED
 
     printed = output.readouterr().err
@@ -770,3 +770,11 @@ def test_cross_and_match_agree_on_every_pair(
                 assert from_cross[pair] == pytest.approx(row["similarity"])
             expected = digest.compare(digest.parse(value), digest.parse(by_name[row["label"]]))
             assert row["similarity"] == pytest.approx(expected.similarity, abs=1e-4)
+
+
+# LIEF takes most of a second to import, and --help, --version and a comparison of two
+# digest strings parse no binary.
+def test_the_cli_imports_no_parser_until_a_binary_is_read() -> None:
+    probe = "import sys, eous.cli; print('lief' in sys.modules)"
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, check=True)
+    assert result.stdout.strip() == b"False"
