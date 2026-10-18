@@ -13,22 +13,22 @@ from eous import loader, report
 
 
 def test_the_refusal_names_are_the_documented_ones() -> None:
-    names = {
+    names = (
         report.UNREADABLE,
         report.UNSUPPORTED_FORMAT,
         report.UNSUPPORTED_ARCH,
         report.PACKED,
         report.MANAGED,
         report.NO_CODE,
-    }
-    assert names == {
+    )
+    assert names == (
         "unreadable",
         "unsupported_format",
         "unsupported_arch",
         "packed",
         "managed",
         "no_code",
-    }
+    )
 
 
 def test_a_pe_for_another_architecture_refuses_by_arch(tmp_path: Path) -> None:

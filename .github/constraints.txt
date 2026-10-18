@@ -1,4 +1,4 @@
-# the versions CI installs; bump deliberately, not mid-merge
+# The exact versions CI installs. Bump them in their own pull request.
 coverage==7.15.4
 maturin==1.15.0
 mypy==2.3.0

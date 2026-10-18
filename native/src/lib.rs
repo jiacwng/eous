@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn hostile_code_digests_without_panicking() {
+    fn hostile_code_ends_in_a_digest_or_none_without_panicking() {
         let mut state = 20_261_013_u64;
         let noise: Vec<u8> = (0..65_536)
             .map(|_| {

@@ -89,6 +89,23 @@ def test_a_truncated_pe_header_is_left_to_lief() -> None:
         loader._check_pe_sections(claims[:cut])
 
 
+def test_lief_skips_the_pe_tables_eous_never_reads() -> None:
+    raw = PE64.read_bytes()
+    assert len(lief.PE.parse(raw).imports) > 0
+    parsed = loader._parse(raw)
+    assert isinstance(parsed, lief.PE.Binary)
+    assert len(parsed.imports) == 0
+    assert not parsed.has_resources
+
+
+def test_lief_skips_the_elf_symbols_eous_never_reads() -> None:
+    raw = ELF64.read_bytes()
+    assert len(lief.ELF.parse(raw).symbols) > 0
+    parsed = loader._parse(raw)
+    assert isinstance(parsed, lief.ELF.Binary)
+    assert len(parsed.symbols) == 0
+
+
 def test_a_stripped_elf_whose_segments_overlap_is_refused(tmp_path: Path) -> None:
     raw = bytearray(stripped_elf(b"\x31\xc0\xc3" * 64))
     program = bytes(raw[64:120])

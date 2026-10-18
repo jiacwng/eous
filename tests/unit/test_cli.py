@@ -152,6 +152,14 @@ def test_a_closed_reader_ends_the_run_quietly(
     assert capsys.readouterr().err == ""
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="EINVAL is the closed-pipe error here")
+def test_einval_stays_internal_away_from_windows(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "stdout", ClosedPipe(errno.EINVAL))
+    assert cli.main(["hash", str(PE64)]) == cli.INTERNAL
+
+
 def test_an_unrelated_os_error_is_still_internal(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -212,7 +220,7 @@ def test_a_full_device_exits_as_an_internal_error() -> None:
             timeout=120,
             check=False,
         )
-    assert process.returncode == cli.INTERNAL
+    assert process.returncode == 3
     assert process.stderr.count(b"\n") == 1
 
 
@@ -248,7 +256,8 @@ def test_json_carries_the_refusal_on_stdout_alone(
 def test_every_json_document_opens_with_the_versions(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    known = known_file(tmp_path, PE64, PE64, ELF64)
+    known = known_file(tmp_path, PE64, PE64)
+    meta = {"eous": version("eous"), "iced-x86": _native.ICED_X86, "lief": version("lief")}
     for args in (
         ["hash", "--json", str(PE64)],
         ["compare", "--json", str(PE64), str(PE64)],
@@ -257,12 +266,16 @@ def test_every_json_document_opens_with_the_versions(
     ):
         assert cli.main(args) == cli.OK
         document, _ = json.JSONDecoder().raw_decode(capsys.readouterr().out)
-        assert document["meta"] == {
-            "eous": version("eous"),
-            "iced-x86": _native.ICED_X86,
-            "lief": version("lief"),
-        }
-    assert document["skipped_alone_in_target"] == 1
+        assert document["meta"] == meta
+
+
+def test_cross_counts_a_digest_alone_in_its_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64, PE64, ELF64)
+    assert cli.main(["cross", "--json", str(known)]) == cli.OK
+    header = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert header["skipped_alone_in_target"] == 1
 
 
 def test_hash_without_a_file_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
