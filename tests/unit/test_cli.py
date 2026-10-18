@@ -285,10 +285,21 @@ def test_a_file_compared_with_itself_scores_full(output: pytest.CaptureFixture[s
 
 
 # The filesystem answers first, so a mistyped path reports as absent rather than being
-# read as a malformed digest.
-def test_a_mistyped_path_reports_no_such_file(output: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["compare", "no/such/file.exe", str(CLEAN)]) == cli.USAGE
-    assert "no such file" in output.readouterr().err
+# read as a malformed digest, and every command refuses it the same way.
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["hash", "no/such/file.exe"],
+        ["compare", "no/such/file.exe", str(CLEAN)],
+        ["match", "no/such/file.exe", str(CLEAN)],
+    ],
+    ids=["hash", "compare", "match"],
+)
+def test_a_mistyped_path_is_refused_as_absent(
+    args: list[str], output: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(args) == cli.REFUSED
+    assert f"{Path('no/such/file.exe')}: unreadable: file is absent" in output.readouterr().err
 
 
 def test_differing_targets_are_a_usage_error(output: pytest.CaptureFixture[str]) -> None:
@@ -694,7 +705,7 @@ def test_cross_pairs_inside_each_target(tmp_path: Path, output: pytest.CaptureFi
     assert cli.main(["cross", str(known)]) == cli.OK
     captured = output.readouterr()
     assert len([line for line in captured.out.splitlines() if line]) == 2
-    assert "2 pairs scored across elf64, pe64" in captured.err
+    assert "2 pairs scored across pe64, elf64" in captured.err
 
 
 def test_cross_holds_back_anything_below_the_minimum(
@@ -731,10 +742,10 @@ def test_cross_json_writes_one_object_per_line(
 
     header, *pairs, summary = lines
     assert header["digests"] == 4
-    assert header["targets"] == ["elf64", "pe64"]
+    assert header["targets"] == ["pe64", "elf64"]
     assert header["unparsed"] == 0
     assert summary == {"pairs_scored": 2, "below_minimum": 0}
-    assert {row["target"] for row in pairs} == {"elf64", "pe64"}
+    assert [row["target"] for row in pairs] == ["pe64", "elf64"]
     assert pairs[0]["similarity"] == pytest.approx(100.0)
 
 
