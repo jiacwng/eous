@@ -39,3 +39,14 @@ def test_a_worker_that_died_while_idle_is_replaced_before_its_next_file() -> Non
     finally:
         replaced.connection.send(None)
         replaced.process.join()
+
+
+def explode(path: Path) -> report.Analysis:
+    raise RuntimeError("boom")
+
+
+def test_an_exception_in_a_worker_refuses_that_file_and_the_batch_goes_on() -> None:
+    results = list(pool.analyse([PE64, PE64], explode))
+    assert [r.refusal for r in results] == [
+        report.Refusal(report.INTERNAL_ERROR, "RuntimeError: boom")
+    ] * 2

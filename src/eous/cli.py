@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import errno
 import io
+import itertools
 import json
 import os
 import sys
@@ -49,7 +50,7 @@ lands where unrelated files already sit and carries no information.
 
 exit codes:
   0  every file digested, or the reader closed the output early
-  1  at least one file refused, with the cause on stderr
+  1  at least one file or directory refused, with the cause on stderr
   2  usage error
   3  internal error
 
@@ -232,19 +233,31 @@ def _quieten_stdout() -> None:
 
 
 def _run_hash(args: argparse.Namespace) -> int:
-    paths = _expand(args.paths)
-    if not paths:
+    from eous import report
+
+    paths, failures = _expand(args.paths)
+    unwalked = [
+        report.Analysis(
+            Path(str(failure.filename)),
+            None,
+            report.Refusal(report.UNREADABLE, str(failure.strerror)),
+        )
+        for failure in failures
+    ]
+    if not paths and not unwalked:
         named = ", ".join(_readable(str(path)) for path in args.paths)
         _warn(f"{named}: no file to hash")
         return USAGE
 
-    labelled = len(paths) > 1 or paths != args.paths
+    labelled = len(paths) > 1 or paths != args.paths or bool(unwalked)
     records: list[dict[str, object]] = []
     refused = False
+    failed = False
 
     try:
-        for result in _analyse(paths):
+        for result in itertools.chain(unwalked, _analyse(paths) if paths else ()):
             refused = refused or result.refusal is not None
+            failed = failed or _failed(result)
             if args.json:
                 records.append(_as_record(result))
             else:
@@ -257,7 +270,13 @@ def _run_hash(args: argparse.Namespace) -> int:
             raise
         _quieten_stdout()
 
-    return REFUSED if refused else OK
+    return INTERNAL if failed else REFUSED if refused else OK
+
+
+def _failed(result: report.Analysis) -> bool:
+    from eous import report
+
+    return result.refusal is not None and result.refusal.reason == report.INTERNAL_ERROR
 
 
 def _plural(count: int, noun: str) -> str:
@@ -265,7 +284,7 @@ def _plural(count: int, noun: str) -> str:
 
 
 def _looks_like_a_path(text: str) -> bool:
-    return "/" in text or "\\" in text or Path(text).suffix != ""
+    return ":" not in text or "/" in text or "\\" in text or Path(text).suffix != ""
 
 
 def _as_digest(text: str) -> tuple[str | None, int]:
@@ -275,7 +294,7 @@ def _as_digest(text: str) -> tuple[str | None, int]:
     [result] = _analyse([Path(text)])
     if result.refusal is not None:
         _warn(_refusal_line(result.path, result.refusal))
-        return (None, REFUSED)
+        return (None, INTERNAL if _failed(result) else REFUSED)
     return (result.digest, OK)
 
 
@@ -525,12 +544,18 @@ def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
     return pool.analyse(paths, report.analyse)
 
 
-def _expand(paths: list[Path]) -> list[Path]:
+def _expand(paths: list[Path]) -> tuple[list[Path], list[OSError]]:
     found: list[Path] = []
     seen: set[Path] = set()
+    failures: list[OSError] = []
     for path in paths:
         if os.path.isdir(path):
-            walked = sorted(p for p in path.rglob("*") if os.path.isfile(p))
+            walked = sorted(
+                p
+                for root, _, names in os.walk(path, onerror=failures.append)
+                for p in (Path(root) / name for name in names)
+                if os.path.isfile(p)
+            )
         else:
             walked = [path]
         for candidate in walked:
@@ -538,7 +563,7 @@ def _expand(paths: list[Path]) -> list[Path]:
             if real not in seen:
                 seen.add(real)
                 found.append(candidate)
-    return found
+    return found, failures
 
 
 def _readable(text: str) -> str:
