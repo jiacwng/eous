@@ -7,7 +7,7 @@ PE or ELF binary on x86 or x86-64, and it produces a 512-bit hash of the program
 
 eous works on instruction mnemonics. It disassembles every executable section and maps each
 mnemonic to one of 84 roots, groups of mnemonics with one meaning, so `add`, `adc` and `xadd`
-share a root. It forms the 6-grams (shingles) of the root sequence, stopping each at a
+share a root. It forms the 3-grams (shingles) of the root sequence, stopping each at a
 control-flow instruction, then reduces the n-gram set to a 512-bit MinHash sketch.
 Recompilation moves bytes and rewrites addresses. The mnemonic sequence survives both, so
 two builds of one source still produce similar digests.
@@ -134,7 +134,7 @@ against imports 0.863, size 0.852 and tlsh 0.848.
 ```
 EO1:pe32:40045:780e1dde...
  |   |     |     the 512-bit sketch, 128 hex characters
- |   |     distinct 6-grams found
+ |   |     distinct 3-grams found
  |   target: format and word size
  the digest format version
 ```
