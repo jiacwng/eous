@@ -14,6 +14,7 @@ UNSUPPORTED_ARCH = "unsupported_arch"
 PACKED = "packed"
 MANAGED = "managed"
 NO_CODE = "no_code"
+INTERNAL_ERROR = "internal_error"
 PACKED_SHARE = 0.5
 
 # 7.0 catches 44.1% of packed files, against 41.7% at 7.2, with the same 0.1% false alarms.
@@ -42,6 +43,10 @@ def analyse(path: Path) -> Analysis:
 
 def crashed(path: Path) -> Analysis:
     return _refuse(path, UNREADABLE, "the analysis process ended abruptly")
+
+
+def failed(path: Path, exc: BaseException) -> Analysis:
+    return _refuse(path, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
 
 
 def overran(path: Path, seconds: float) -> Analysis:

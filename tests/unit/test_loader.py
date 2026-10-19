@@ -289,3 +289,14 @@ def test_a_header_without_the_il_only_flag_is_not_managed() -> None:
 def test_an_empty_cor20_header_is_not_managed() -> None:
     fake = FakePE(0x2000, 72, b"")
     assert loader.read_clr(fake) == (False, False)
+
+
+def test_an_accessor_that_throws_after_parsing_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(parsed: lief.PE.Binary, size: int) -> loader.Binary:
+        raise RuntimeError("bad section table")
+
+    monkeypatch.setattr(loader, "_load_pe", broken)
+    with pytest.raises(LoaderError, match="cannot parse: bad section table"):
+        loader.load(PE64)

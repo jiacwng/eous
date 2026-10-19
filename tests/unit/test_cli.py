@@ -428,7 +428,7 @@ def test_a_file_name_cannot_forge_a_digest_line(
         report.Analysis(path=hostile, digest="EO1:pe64:1:" + "0" * 128, refusal=None),
         report.Analysis(path=Path(PE64), digest="EO1:pe64:2:" + "0" * 128, refusal=None),
     ]
-    monkeypatch.setattr(cli, "_expand", lambda paths: [hostile, Path(PE64)])
+    monkeypatch.setattr(cli, "_expand", lambda paths: ([hostile, Path(PE64)], []))
     monkeypatch.setattr(cli, "_analyse", lambda paths: iter(digested))
     assert cli.main(["hash", str(PE64), str(PE64)]) == cli.OK
 
@@ -815,3 +815,63 @@ def test_the_cli_imports_no_parser_until_a_binary_is_read() -> None:
     probe = "import sys, eous.cli; print('lief' in sys.modules)"
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, check=True)
     assert result.stdout.strip() == b"False"
+
+
+def test_an_internal_error_finishes_the_batch_and_exits_3(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def analysed(paths: list[Path]) -> list[report.Analysis]:
+        return [report.failed(paths[0], RuntimeError("boom")), report.analyse(paths[1])]
+
+    monkeypatch.setattr(cli, "_analyse", analysed)
+    assert cli.main(["hash", str(PE64), str(PE32)]) == cli.INTERNAL
+    captured = capsys.readouterr()
+    assert "internal_error: RuntimeError: boom" in captured.err
+    assert str(PE32) in captured.out
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions and no root"
+)
+def test_an_unreadable_directory_is_refused_and_the_rest_is_hashed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plant(tmp_path, "a.exe", "locked/b.exe")
+    (tmp_path / "locked").chmod(0)
+    try:
+        assert cli.main(["hash", str(tmp_path)]) == cli.REFUSED
+    finally:
+        (tmp_path / "locked").chmod(0o700)
+    captured = capsys.readouterr()
+    assert f"{tmp_path / 'locked'}: unreadable: Permission denied" in captured.err
+    assert captured.out.startswith(str(tmp_path / "a.exe"))
+
+
+def test_a_missing_file_without_a_suffix_is_refused_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["compare", "program", str(PE64)]) == cli.REFUSED
+    assert "program: unreadable: file is absent" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions and no root"
+)
+def test_an_unreadable_directory_alone_is_a_json_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        assert cli.main(["hash", "--json", str(locked)]) == cli.REFUSED
+    finally:
+        locked.chmod(0o700)
+    [record] = json.loads(capsys.readouterr().out)["results"]
+    assert record == {
+        "path": str(locked),
+        "digest": None,
+        "reason": "unreadable",
+        "detail": "Permission denied",
+    }

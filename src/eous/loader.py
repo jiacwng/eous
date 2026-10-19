@@ -151,14 +151,15 @@ def load(path: Path) -> Binary:
     _check_pe_sections(raw)
     try:
         parsed = _parse(raw)
+        if parsed is None:
+            raise LoaderError("no recognised container")
+        if isinstance(parsed, lief.PE.Binary):
+            return _load_pe(parsed, len(raw))
+        return _load_elf(parsed, len(raw))
+    except (LoaderError, MemoryError):
+        raise
     except Exception as exc:
         raise LoaderError(f"cannot parse: {exc}") from exc
-
-    if parsed is None:
-        raise LoaderError("no recognised container")
-    if isinstance(parsed, lief.PE.Binary):
-        return _load_pe(parsed, len(raw))
-    return _load_elf(parsed, len(raw))
 
 
 def _parse(raw: bytes) -> lief.PE.Binary | lief.ELF.Binary | None:

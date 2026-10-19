@@ -66,7 +66,7 @@ def analyse(paths: list[Path], analyse_one: Analyse) -> Iterator[report.Analysis
                         outcome = report.crashed(paths[index])
                         worker = _replace(worker, analyse_one)
                     if isinstance(outcome, BaseException):
-                        raise outcome
+                        outcome = report.failed(paths[index], outcome)
                 elif time.monotonic() >= worker.deadline:
                     outcome = report.overran(paths[index], worker.seconds)
                     worker = _replace(worker, analyse_one)
