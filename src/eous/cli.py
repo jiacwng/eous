@@ -36,7 +36,7 @@ built from similar code produce digests that agree in many places."""
 
 EPILOGUE = """\
 digest format:
-  EO1:pe64:3155:5cfc520f897cc0cf...
+  EO1:pe64:1694:37e6ad029a3a70b0...
    |   |    |    |
    |   |    |    the sketch, 512 bits as 128 hex characters
    |   |    how many distinct instruction sequences were found
@@ -58,7 +58,7 @@ examples:
   eous hash samples/ > digests.txt
   eous hash --json samples/ > digests.json
   eous compare old.exe new.exe
-  eous compare EO1:pe64:2841:1f0a... EO1:pe64:3155:5cfc...
+  eous compare EO1:pe64:2841:1f0a... EO1:pe64:1694:37e6...
   eous match suspect.exe digests.txt
   eous match suspect.exe digests.txt --min 80
   eous cross digests.txt --min 40

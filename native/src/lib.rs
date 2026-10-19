@@ -12,7 +12,7 @@ const VERSION: &str = "EO1";
 const TARGETS: [&str; 4] = ["pe32", "pe64", "elf32", "elf64"];
 const BITNESSES: [u32; 2] = [32, 64];
 
-const NGRAM: usize = 6;
+const NGRAM: usize = 3;
 const PERMUTATIONS: usize = 256;
 const SLOT_BITS: u32 = 2;
 const MODULUS: u64 = (1 << 61) - 1;
@@ -86,7 +86,7 @@ fn coefficients() -> &'static [(u64, u64)] {
     })
 }
 
-// Each shingle is six root ids packed into one integer, so equal shingles are equal keys.
+// Each shingle is three root ids packed into one integer, so equal shingles are equal keys.
 struct Shingles {
     key: u64,
     filled: usize,
@@ -318,7 +318,7 @@ mod tests {
     }
 
     fn around(middle: &[u8]) -> Vec<u8> {
-        code(&[XOR_PUSH, XOR, middle, XOR_PUSH, XOR])
+        code(&[XOR, middle, XOR_PUSH])
     }
 
     #[test]
@@ -334,14 +334,18 @@ mod tests {
 
     #[test]
     fn a_run_shorter_than_a_shingle_gives_no_digest() {
-        assert_eq!(one(code(&[XOR_PUSH, XOR_PUSH, RET])), None);
-        assert!(one(XOR_PUSH.repeat(3)).is_some());
+        assert_eq!(one(code(&[XOR, RET])), None);
+        assert!(one(code(&[XOR_PUSH, XOR])).is_some());
     }
 
     #[test]
     fn control_flow_ends_a_run() {
         for (encoding, name) in ENDS_A_RUN {
             assert_eq!(one(around(encoding)), None, "{name} left the run open");
+            assert!(
+                one(code(&[XOR_PUSH, encoding])).is_some(),
+                "{name} left its shingle"
+            );
         }
     }
 
@@ -359,25 +363,25 @@ mod tests {
     }
 
     #[test]
-    fn a_repeat_past_six_adds_no_shingle() {
+    fn a_repeat_past_three_adds_no_shingle() {
         let nops = |count: usize| one(code(&[XOR_PUSH, &NOP.repeat(count), XOR_PUSH]));
-        assert!(nops(6).is_some());
-        assert_ne!(nops(5), nops(6));
-        assert_eq!(nops(6), nops(7));
-        assert_eq!(nops(6), nops(40));
+        assert!(nops(3).is_some());
+        assert_ne!(nops(2), nops(3));
+        assert_eq!(nops(3), nops(4));
+        assert_eq!(nops(3), nops(40));
     }
 
     #[test]
     fn a_run_never_crosses_from_one_section_into_the_next() {
-        let half = code(&[XOR_PUSH, XOR]);
+        let half = XOR_PUSH.to_vec();
         assert_eq!(digest64(&[half.clone(), half.clone()]), None);
         assert!(one(half.repeat(2)).is_some());
     }
 
     #[test]
     fn the_cardinality_counts_distinct_shingles() {
-        assert_eq!(cardinality(&one(XOR_PUSH.repeat(3)).unwrap()), 1);
-        assert_eq!(cardinality(&one(XOR_PUSH.repeat(4)).unwrap()), 2);
+        assert_eq!(cardinality(&one(code(&[XOR_PUSH, XOR])).unwrap()), 1);
+        assert_eq!(cardinality(&one(XOR_PUSH.repeat(2)).unwrap()), 2);
         assert_eq!(cardinality(&one(XOR_PUSH.repeat(40)).unwrap()), 2);
     }
 
@@ -398,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_digest_has_the_eo1_layout() {
-        let text = one(XOR_PUSH.repeat(3)).unwrap();
+        let text = one(code(&[XOR_PUSH, XOR])).unwrap();
         let fields: Vec<&str> = text.split(':').collect();
         assert_eq!(fields[..3], ["EO1", "pe64", "1"]);
         assert_eq!(fields[3].len(), PERMUTATIONS * SLOT_BITS as usize / 4);
