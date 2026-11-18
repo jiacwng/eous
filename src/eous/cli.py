@@ -15,7 +15,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from eous import digest, toolchain
+from eous import cluster, digest, toolchain
 
 if TYPE_CHECKING:
     from eous import report
@@ -63,6 +63,7 @@ examples:
   eous match suspect.exe digests.txt
   eous match suspect.exe digests.txt --min 80
   eous cross digests.txt --min 40
+  eous cluster digests.txt --min 90
 
 reading a comparison:
   similarity:  36.5% +/- 4.2
@@ -139,6 +140,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
 
+    cluster_command = commands.add_parser(
+        "cluster",
+        help="group the digests in a file by similarity",
+        description="Give every digest in a file a cluster. Two digests share a cluster when "
+        "a chain of pairs scoring at least --min joins them, so a low --min chains unrelated "
+        "files together. The file is what `eous hash` writes. Each line is a cluster name, "
+        "then the label of one digest. The name is the target and a number, counted in the "
+        "order the clusters first appear, and a digest that joins nothing gets a cluster to "
+        "itself. A cluster stays inside one target, since two digests compare only when "
+        "their targets match, and the targets follow in the order they first appear.",
+    )
+    cluster_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
+    cluster_command.add_argument(
+        "--min",
+        type=_percentage,
+        required=True,
+        dest="minimum",
+        metavar="PERCENT",
+        help="join two digests scoring at least this percentage",
+    )
+
     for command in (match_command, cross_command):
         command.add_argument(
             "--min",
@@ -148,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
             metavar="PERCENT",
             help="omit results scoring below this percentage",
         )
-    for command in (hash_command, compare_command, match_command, cross_command):
+    for command in (hash_command, compare_command, match_command, cross_command, cluster_command):
         command.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
@@ -213,6 +235,8 @@ def _dispatch(args: argparse.Namespace) -> int | None:
         return _run_match(args)
     if args.command == "cross" and args.known:
         return _run_cross(args)
+    if args.command == "cluster" and args.known:
+        return _run_cluster(args)
     return None
 
 
@@ -427,7 +451,7 @@ def _by_target(sketches: list[digest.Sketch]) -> dict[str, list[int]]:
     grouped: dict[str, list[int]] = {}
     for index, sketch in enumerate(sketches):
         grouped.setdefault(sketch.target, []).append(index)
-    return {target: rows for target, rows in grouped.items() if len(rows) > 1}
+    return grouped
 
 
 def _run_cross(args: argparse.Namespace) -> int:
@@ -436,7 +460,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         return USAGE
     labels, sketches, unparsed = read
 
-    grouped = _by_target(sketches)
+    grouped = {target: rows for target, rows in _by_target(sketches).items() if len(rows) > 1}
     if not grouped:
         _warn(f"{_readable(str(args.known))}: contains fewer than two digests of any one target")
         return USAGE
@@ -500,6 +524,59 @@ def _run_cross(args: argparse.Namespace) -> int:
         _warn(f"{_plural(alone, 'digest')} skipped, alone in its target")
     if below_minimum:
         _warn(f"{_plural(below_minimum, 'pair')} scored below {args.minimum:g}%")
+    return OK
+
+
+def _run_cluster(args: argparse.Namespace) -> int:
+    read = _read_digests(args.known)
+    if read is None:
+        return USAGE
+    labels, sketches, unparsed = read
+
+    if not sketches:
+        _warn(f"{_readable(str(args.known))}: contains no digest")
+        return USAGE
+
+    grouped = _by_target(sketches)
+    total = 0
+    alone = 0
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "meta": _meta(),
+                    "digests": len(sketches),
+                    "targets": list(grouped),
+                    "unparsed": unparsed,
+                }
+            )
+        )
+
+    for target, members in grouped.items():
+        found = cluster.clusters([sketches[index] for index in members], args.minimum)
+        total += len(found)
+        alone += sum(1 for places in found if len(places) == 1)
+        for number, places in enumerate(found, start=1):
+            name = f"{target}:{number}"
+            held = [labels[members[place]] for place in places]
+            if args.json:
+                print(
+                    json.dumps(
+                        {"cluster": name, "target": target, "size": len(held), "members": held}
+                    )
+                )
+            else:
+                for label in held:
+                    print(f"{name}  {_readable(label)}")
+
+    if args.json:
+        print(json.dumps({"clusters": total, "singletons": alone}))
+
+    _warn(
+        f"{_plural(len(sketches), 'digest')} in {_plural(total, 'cluster')}, "
+        f"{alone} holding one digest"
+    )
     return OK
 
 

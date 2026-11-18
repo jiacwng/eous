@@ -1,4 +1,4 @@
-# The eous command line end to end: the four commands, their output, exit codes and refusals.
+# The eous command line end to end: the five commands, their output, exit codes and refusals.
 
 import errno
 import io
@@ -263,6 +263,7 @@ def test_every_json_document_opens_with_the_versions(
         ["compare", "--json", str(PE64), str(PE64)],
         ["match", "--json", str(PE64), str(known)],
         ["cross", "--json", str(known)],
+        ["cluster", "--json", str(known), "--min", "50"],
     ):
         assert cli.main(args) == cli.OK
         document, _ = json.JSONDecoder().raw_decode(capsys.readouterr().out)
@@ -501,7 +502,11 @@ def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:
 
 
 def args_for(command: str, known: Path) -> list[str]:
-    return [command, str(PE64), str(known)] if command == "match" else [command, str(known)]
+    if command == "match":
+        return [command, str(PE64), str(known)]
+    if command == "cluster":
+        return [command, str(known), "--min", "50"]
+    return [command, str(known)]
 
 
 def test_match_ranks_the_closest_first(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -583,7 +588,7 @@ def test_match_refuses_a_query_it_cannot_digest(
     assert "unreadable" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["match", "cross"])
+@pytest.mark.parametrize("command", ["match", "cross", "cluster"])
 def test_an_absent_digests_file_is_a_usage_error(
     command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -608,7 +613,7 @@ def test_match_json_carries_the_target_and_the_ranking(
     assert payload["matches"][0]["similarity"] == pytest.approx(100.0)
 
 
-@pytest.mark.parametrize("command", ["match", "cross"])
+@pytest.mark.parametrize("command", ["match", "cross", "cluster"])
 def test_a_hostile_label_is_escaped(
     command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -627,6 +632,7 @@ def test_a_hostile_label_is_escaped(
         ("match", "--top", "-1"),
         ("match", "--min", "100.1"),
         ("cross", "--min", "101"),
+        ("cluster", "--min", "-1"),
     ],
 )
 def test_a_value_outside_its_range_is_a_usage_error(
@@ -809,6 +815,78 @@ def test_cross_and_match_agree_on_every_pair(
                 assert from_cross[pair] == pytest.approx(row["similarity"])
             expected = digest.compare(digest.parse(value), digest.parse(by_name[row["label"]]))
             assert row["similarity"] == pytest.approx(expected.similarity, abs=1e-4)
+
+
+def test_cluster_gives_every_digest_a_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = digest_of(PE64)
+    known = tmp_path / "known.txt"
+    known.write_text(f"a  {text}\nc  {weaker(text)}\nb  {text}\n", encoding="utf-8")
+
+    assert cli.main(["cluster", str(known), "--min", "99"]) == cli.OK
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["pe64:1  a", "pe64:1  b", "pe64:2  c"]
+    assert "3 digests in 2 clusters, 1 holding one digest" in captured.err
+
+
+def test_cluster_stays_inside_each_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64, ELF64, PE64)
+    assert cli.main(["cluster", str(known), "--min", "0"]) == cli.OK
+    names = [line.split()[0] for line in capsys.readouterr().out.splitlines()]
+    assert names == ["pe64:1", "pe64:1", "elf64:1"]
+
+
+def test_cluster_json_writes_one_object_per_cluster(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64, ELF64, PE64)
+    assert cli.main(["cluster", str(known), "--min", "50", "--json"]) == cli.OK
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+
+    header, *found, summary = lines
+    assert header["digests"] == 3
+    assert header["targets"] == ["pe64", "elf64"]
+    assert header["unparsed"] == 0
+    assert found == [
+        {"cluster": "pe64:1", "target": "pe64", "size": 2, "members": [str(PE64), str(PE64)]},
+        {"cluster": "elf64:1", "target": "elf64", "size": 1, "members": [str(ELF64)]},
+    ]
+    assert summary == {"clusters": 2, "singletons": 1}
+
+
+def test_cluster_gives_a_lone_digest_its_own_cluster(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = tmp_path / "known.txt"
+    known.write_text(f"one  {digest_of(PE64)}\n", encoding="utf-8")
+    assert cli.main(["cluster", str(known), "--min", "100"]) == cli.OK
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["pe64:1  one"]
+    assert "1 digest in 1 cluster, 1 holding one digest" in captured.err
+
+
+def test_cluster_without_a_minimum_is_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64, PE64)
+    assert cli.main(["cluster", str(known)]) == cli.USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--min" in captured.err
+
+
+def test_cluster_is_a_usage_error_when_no_line_is_a_digest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = tmp_path / "known.txt"
+    known.write_text("not a digest\n", encoding="utf-8")
+    assert cli.main(["cluster", str(known), "--min", "50"]) == cli.USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "contains no digest" in captured.err
 
 
 def test_the_cli_imports_no_parser_until_a_binary_is_read() -> None:
