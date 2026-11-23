@@ -261,7 +261,7 @@ def test_json_carries_the_refusal_on_stdout_alone(
     [record] = records(captured.out)
     assert record["digest"] is None
     assert record["reason"] == "unreadable"
-    assert record["sha256"] == hashlib.sha256(JUNK).hexdigest()
+    assert record["sha256"] is None
     assert captured.err == ""
 
 
@@ -276,7 +276,7 @@ def test_a_refused_container_keeps_its_sha256(
     assert record["sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()
 
 
-def test_every_json_document_opens_with_the_versions(
+def test_every_json_report_opens_with_the_versions(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     known = known_file(tmp_path, PE64, PE64)
@@ -450,8 +450,10 @@ def test_a_file_name_cannot_forge_a_digest_line(
 ) -> None:
     hostile = Path("a\nEO1:pe64:9999:" + "f" * 128)
     digested = [
-        report.Analysis(hostile, None, "EO1:pe64:1:" + "0" * 128, None),
-        report.Analysis(Path(PE64), None, "EO1:pe64:2:" + "0" * 128, None),
+        report.Analysis(path=hostile, sha256=None, digest="EO1:pe64:1:" + "0" * 128, refusal=None),
+        report.Analysis(
+            path=Path(PE64), sha256=None, digest="EO1:pe64:2:" + "0" * 128, refusal=None
+        ),
     ]
     monkeypatch.setattr(cli, "_expand", lambda paths: ([hostile, Path(PE64)], []))
     monkeypatch.setattr(cli, "_analyse", lambda paths: iter(digested))
@@ -522,7 +524,7 @@ def sha256_at(place: int) -> str:
     return f"{place:064x}"
 
 
-def line(name: str, text: str, place: int, written: str | None = None) -> str:
+def record_line(name: str, text: str, place: int, written: str | None = None) -> str:
     record = {
         "sha256": sha256_at(place),
         "digest": text,
@@ -534,7 +536,7 @@ def line(name: str, text: str, place: int, written: str | None = None) -> str:
 
 def store(tmp_path: Path, *named: tuple[str, str]) -> Path:
     target = tmp_path / "known.jsonl"
-    lines = [line(name, text, place) for place, (name, text) in enumerate(named)]
+    lines = [record_line(name, text, place) for place, (name, text) in enumerate(named)]
     target.write_text("".join(lines), encoding="utf-8")
     return target
 
@@ -554,7 +556,7 @@ def args_for(command: str, known: Path) -> list[str]:
 def test_match_ranks_the_closest_first(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     known = known_file(tmp_path, PE64, ELF64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(line("weaker", weaker(digest_of(PE64)), 99))
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known)]) == cli.OK
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
@@ -568,7 +570,7 @@ def test_match_reads_a_digests_file_that_starts_with_a_byte_order_mark(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     known = tmp_path / "known.jsonl"
-    known.write_text(line("one", digest_of(PE64), 0), encoding="utf-8-sig")
+    known.write_text(record_line("one", digest_of(PE64), 0), encoding="utf-8-sig")
     assert cli.main(["match", str(PE64), str(known)]) == cli.OK
     captured = capsys.readouterr()
     assert captured.out.startswith("100.0%")
@@ -710,7 +712,7 @@ def test_match_holds_back_anything_below_the_minimum(
 ) -> None:
     known = known_file(tmp_path, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(line("weaker", weaker(digest_of(PE64)), 99))
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known), "--min", "99"]) == cli.OK
     captured = capsys.readouterr()
@@ -733,7 +735,7 @@ def test_match_json_counts_what_the_minimum_held_back(
 ) -> None:
     known = known_file(tmp_path, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(line("weaker", weaker(digest_of(PE64)), 99))
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known), "--min", "99", "--json"]) == cli.OK
     payload = json.loads(capsys.readouterr().out)
@@ -744,7 +746,7 @@ def test_match_json_counts_what_the_minimum_held_back(
 def test_the_minimum_applies_before_top(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     known = known_file(tmp_path, PE64, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(line("weaker", weaker(digest_of(PE64)), 99))
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known), "--top", "3", "--min", "99"]) == cli.OK
     assert len([line for line in capsys.readouterr().out.splitlines() if line]) == 2
@@ -1008,7 +1010,7 @@ def test_a_sha256_read_twice_counts_once(
 ) -> None:
     known = known_file(tmp_path, PE64, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(line("again", digest_of(PE64), 0))
+        handle.write(record_line("again", digest_of(PE64), 0))
     assert cli.main(args_for(command, known)) == cli.OK
     captured = capsys.readouterr()
     assert "again" not in captured.out
@@ -1021,7 +1023,7 @@ def test_digests_of_two_eous_versions_are_a_usage_error(
 ) -> None:
     known = known_file(tmp_path, PE64, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(line("older", digest_of(PE64), 99, written="0.0.1"))
+        handle.write(record_line("older", digest_of(PE64), 99, written="0.0.1"))
     assert cli.main(args_for(command, known)) == cli.USAGE
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -1032,7 +1034,7 @@ def test_match_refuses_a_file_against_digests_of_another_eous_version(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     known = tmp_path / "known.jsonl"
-    known.write_text(line("older", digest_of(PE64), 0, written="0.0.1"), encoding="utf-8")
+    known.write_text(record_line("older", digest_of(PE64), 0, written="0.0.1"), encoding="utf-8")
     assert cli.main(["match", str(PE64), str(known)]) == cli.USAGE
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -1078,7 +1080,7 @@ def test_match_refuses_a_file_against_digests_of_another_eous_version(
         "no eous",
     ],
 )
-def test_a_record_that_is_not_one_is_counted_and_skipped(
+def test_a_malformed_record_is_counted_and_skipped(
     broken: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     known = known_file(tmp_path, PE64)
@@ -1191,7 +1193,7 @@ def test_a_sha256_with_two_labels_is_a_usage_error(
     assert f"{sha256_at(0)} carries two labels" in captured.err
 
 
-def test_a_label_line_that_is_not_one_is_counted_and_skipped(
+def test_a_malformed_label_line_is_counted_and_skipped(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     known = known_file(tmp_path, PE64)

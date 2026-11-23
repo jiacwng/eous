@@ -140,24 +140,18 @@ def load(path: Path) -> Binary:
     try:
         with path.open("rb") as handle:
             head = handle.read(32)
-            recognised = head[:2] == b"MZ" or head[:4] == b"\x7fELF"
-            if recognised:
-                raw = head + handle.read()
-                sha256 = hashlib.sha256(raw).hexdigest()
-            else:
-                raw = b""
-                handle.seek(0)
-                sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+            if head[:2] != b"MZ" and head[:4] != b"\x7fELF":
+                if lief.is_macho(list(head)):
+                    raise UnsupportedFormatError("macho")
+                if lief.is_coff(path):
+                    raise UnsupportedFormatError("coff")
+                raise LoaderError("no recognised container")
+            raw = head + handle.read()
     except OSError as exc:
         raise LoaderError(f"cannot read: {exc.strerror}") from exc
 
+    sha256 = hashlib.sha256(raw).hexdigest()
     try:
-        if not recognised:
-            if lief.is_macho(list(head)):
-                raise UnsupportedFormatError("macho")
-            if lief.is_coff(path):
-                raise UnsupportedFormatError("coff")
-            raise LoaderError("no recognised container")
         _check_pe_sections(raw)
         parsed = _parse(raw)
         if parsed is None:
