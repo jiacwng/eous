@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import warnings
 from collections.abc import Callable
@@ -57,7 +58,7 @@ ELF_CONFIG.parse_overlay = False
 
 
 class LoaderError(Exception):
-    pass
+    sha256: str | None = None
 
 
 class UnsupportedFormatError(LoaderError):
@@ -83,6 +84,7 @@ class Binary:
     # ELF names the width in EI_CLASS and PE in the optional header magic. The machine
     # field names the instruction set, and the two disagree on the x32 ABI.
     bits: int
+    sha256: str
     sections: tuple[Section, ...]
     is_il_only: bool
     has_managed_native: bool
@@ -148,18 +150,24 @@ def load(path: Path) -> Binary:
     except OSError as exc:
         raise LoaderError(f"cannot read: {exc.strerror}") from exc
 
-    _check_pe_sections(raw)
+    sha256 = hashlib.sha256(raw).hexdigest()
     try:
+        _check_pe_sections(raw)
         parsed = _parse(raw)
         if parsed is None:
             raise LoaderError("no recognised container")
         if isinstance(parsed, lief.PE.Binary):
-            return _load_pe(parsed, len(raw))
-        return _load_elf(parsed, len(raw))
-    except (LoaderError, MemoryError):
+            return _load_pe(parsed, len(raw), sha256)
+        return _load_elf(parsed, len(raw), sha256)
+    except LoaderError as exc:
+        exc.sha256 = sha256
+        raise
+    except MemoryError:
         raise
     except Exception as exc:
-        raise LoaderError(f"cannot parse: {exc}") from exc
+        failure = LoaderError(f"cannot parse: {exc}")
+        failure.sha256 = sha256
+        raise failure from exc
 
 
 def _parse(raw: bytes) -> lief.PE.Binary | lief.ELF.Binary | None:
@@ -168,7 +176,7 @@ def _parse(raw: bytes) -> lief.PE.Binary | lief.ELF.Binary | None:
     return lief.ELF.parse(raw, ELF_CONFIG)
 
 
-def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
+def _load_pe(parsed: lief.PE.Binary, size: int, sha256: str) -> Binary:
     arch = _arch(lambda: parsed.header.machine, PE_ARCHES)
     characteristics = lief.PE.Section.CHARACTERISTICS
     executable = [s for s in parsed.sections if s.has_characteristic(characteristics.MEM_EXECUTE)]
@@ -188,13 +196,14 @@ def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
         format="pe",
         arch=arch,
         bits=_bits(lambda: parsed.optional_header.magic, PE_BITS),
+        sha256=sha256,
         sections=_ordered(sections),
         is_il_only=is_il_only,
         has_managed_native=has_managed_native,
     )
 
 
-def _load_elf(parsed: lief.ELF.Binary, size: int) -> Binary:
+def _load_elf(parsed: lief.ELF.Binary, size: int, sha256: str) -> Binary:
     arch = _arch(lambda: parsed.header.machine_type, ELF_ARCHES)
     flags = lief.ELF.Section.FLAGS
     executable = [s for s in parsed.sections if s.has(flags.EXECINSTR)]
@@ -216,6 +225,7 @@ def _load_elf(parsed: lief.ELF.Binary, size: int) -> Binary:
         format="elf",
         arch=arch,
         bits=_bits(lambda: parsed.header.identity_class, ELF_BITS),
+        sha256=sha256,
         sections=_ordered(sections),
         is_il_only=False,
         has_managed_native=False,

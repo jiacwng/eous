@@ -294,7 +294,7 @@ def test_an_empty_cor20_header_is_not_managed() -> None:
 def test_an_accessor_that_throws_after_parsing_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def broken(parsed: lief.PE.Binary, size: int) -> loader.Binary:
+    def broken(parsed: lief.PE.Binary, size: int, sha256: str) -> loader.Binary:
         raise RuntimeError("bad section table")
 
     monkeypatch.setattr(loader, "_load_pe", broken)

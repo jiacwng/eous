@@ -9,8 +9,11 @@ import io
 import itertools
 import json
 import os
+import re
 import sys
+from collections import Counter
 from collections.abc import Iterator
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +27,8 @@ OK = 0
 REFUSED = 1
 USAGE = 2
 INTERNAL = 3
+
+SHA256_PATTERN = re.compile("[0-9a-f]{64}")
 
 # Windows reports a write to a closed pipe as EINVAL where POSIX raises EPIPE.
 CLOSED_PIPE = (errno.EPIPE, errno.EINVAL) if sys.platform == "win32" else (errno.EPIPE,)
@@ -56,14 +61,14 @@ exit codes:
 
 examples:
   eous hash program.exe
-  eous hash samples/ > digests.txt
-  eous hash --json samples/ > digests.json
+  eous hash samples/
+  eous hash --json samples/ > digests.jsonl
   eous compare old.exe new.exe
   eous compare EO1:pe64:2841:1f0a... EO1:pe64:1694:37e6...
-  eous match suspect.exe digests.txt
-  eous match suspect.exe digests.txt --min 80
-  eous cross digests.txt --min 40
-  eous cluster digests.txt --min 90
+  eous match suspect.exe digests.jsonl
+  eous match suspect.exe digests.jsonl --min 80 --labels families.tsv
+  eous cross digests.jsonl --min 40
+  eous cluster digests.jsonl --min 90
 
 reading a comparison:
   similarity:  36.5% +/- 4.2
@@ -121,8 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
         "match",
         help="rank a file or digest against a file of digests",
         description="Score one input against every digest in a file, best first. "
-        "The file is what `eous hash` writes, one digest per line, with or without "
-        "a leading path. Entries built for another target are skipped.",
+        "The file is what `eous hash --json` writes, one record per line. Entries built "
+        "for another target are skipped.",
     )
     match_command.add_argument("query", nargs="?", metavar="FILE-OR-DIGEST")
     match_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
@@ -134,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
         "cross",
         help="score every pair in a file of digests",
         description="Score each digest in a file against every other, in the order they "
-        "were read. The file is what `eous hash` writes. Pairs are scored inside each "
+        "were read. The file is what `eous hash --json` writes. Pairs are scored inside each "
         "target, since two digests compare only when their targets match, and the "
         "targets follow in the order they first appear.",
     )
@@ -145,8 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="group the digests in a file by similarity",
         description="Give every digest in a file a cluster. Two digests share a cluster when "
         "a chain of pairs scoring at least --min joins them, so a low --min chains unrelated "
-        "files together. The file is what `eous hash` writes. Each line is a cluster name, "
-        "then the label of one digest. The name is the target and a number, counted in the "
+        "files together. The file is what `eous hash --json` writes. Each line is a cluster "
+        "name, then the sha256 and path of one digest. With --labels the label comes "
+        "first, and a cluster of two or more digests opens with a count of its labels. "
+        "The name is the target and a number, counted in the "
         "order the clusters first appear, and a digest that joins nothing gets a cluster to "
         "itself. A cluster stays inside one target, since two digests compare only when "
         "their targets match, and the targets follow in the order they first appear.",
@@ -161,6 +168,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="join two digests scoring at least this percentage",
     )
 
+    for command in (match_command, cluster_command):
+        command.add_argument(
+            "--labels",
+            type=Path,
+            metavar="LABELS-FILE",
+            help="a file of sha256, a tab, then a label, shown beside each digest",
+        )
     for command in (match_command, cross_command):
         command.add_argument(
             "--min",
@@ -264,6 +278,7 @@ def _run_hash(args: argparse.Namespace) -> int:
         report.Analysis(
             Path(str(failure.filename)),
             None,
+            None,
             report.Refusal(report.UNREADABLE, str(failure.strerror)),
         )
         for failure in failures
@@ -274,7 +289,6 @@ def _run_hash(args: argparse.Namespace) -> int:
         return USAGE
 
     labelled = len(paths) > 1 or paths != args.paths or bool(unwalked)
-    records: list[dict[str, object]] = []
     refused = False
     failed = False
 
@@ -283,12 +297,9 @@ def _run_hash(args: argparse.Namespace) -> int:
             refused = refused or result.refusal is not None
             failed = failed or _failed(result)
             if args.json:
-                records.append(_as_record(result))
+                print(json.dumps(_as_record(result)), flush=True)
             else:
                 _print_line(result, labelled=labelled, quiet=args.quiet)
-
-        if args.json:
-            print(json.dumps({"meta": _meta(), "results": records}, indent=1))
     except OSError as exc:
         if not (refused and _closed_pipe(exc)):
             raise
@@ -356,34 +367,138 @@ def _run_compare(args: argparse.Namespace) -> int:
     return OK
 
 
-def _read_digests(path: Path) -> tuple[list[str], list[digest.Sketch], int] | None:
-    labels: list[str] = []
-    sketches: list[digest.Sketch] = []
+@dataclass(frozen=True)
+class _Entry:
+    sha256: str
+    path: str
+    eous: str
+    sketch: digest.Sketch
+
+
+def _read_digests(path: Path) -> tuple[list[_Entry], int] | None:
+    entries: list[_Entry] = []
+    seen: set[str] = set()
     unparsed = 0
+    repeated = 0
 
     try:
-        # PowerShell writes a byte-order mark on every redirect, and `eous hash > known.txt`
-        # is the documented way to build this file.
-        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        # Some Windows tools put a byte-order mark in front of UTF-8 text.
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, RecursionError):
+                    record = None
+                if not isinstance(record, dict):
+                    unparsed += 1
+                    continue
+                if record.get("reason") is not None:
+                    continue
+                entry = _as_entry(record)
+                if entry is None:
+                    unparsed += 1
+                elif entry.sha256 in seen:
+                    repeated += 1
+                else:
+                    seen.add(entry.sha256)
+                    entries.append(entry)
     except OSError as exc:
         _warn(f"{_readable(str(path))}: {exc.strerror}")
         return None
 
-    for line in lines:
-        fields = line.split()
-        if not fields:
-            continue
-        try:
-            sketch = digest.parse(fields[-1])
-        except digest.DigestError:
-            unparsed += 1
-            continue
-        labels.append(line[: line.rindex(fields[-1])].strip() or fields[-1])
-        sketches.append(sketch)
-
+    versions = sorted({entry.eous for entry in entries})
+    if len(versions) > 1:
+        held = ", ".join(_readable(written) for written in versions)
+        _warn(f"{_readable(str(path))}: holds digests of several eous versions: {held}")
+        return None
     if unparsed:
         _warn(f"{_plural(unparsed, 'line')} did not parse")
-    return labels, sketches, unparsed
+    if repeated:
+        _warn(f"{_plural(repeated, 'digest')} skipped, sha256 already read")
+    return entries, unparsed
+
+
+def _as_entry(record: dict[str, object]) -> _Entry | None:
+    sha256 = record.get("sha256")
+    path = record.get("path")
+    written = record.get("eous")
+    text = record.get("digest")
+    if not (isinstance(sha256, str) and isinstance(path, str)):
+        return None
+    if not (isinstance(written, str) and isinstance(text, str)):
+        return None
+    if not SHA256_PATTERN.fullmatch(sha256):
+        return None
+    try:
+        return _Entry(sha256, path, written, digest.parse(text))
+    except digest.DigestError:
+        return None
+
+
+def _read_labels(path: Path) -> dict[str, str] | None:
+    labels: dict[str, str] = {}
+    unparsed = 0
+
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                sha256, _, label = line.partition("\t")
+                sha256, label = sha256.strip().lower(), label.strip()
+                if not SHA256_PATTERN.fullmatch(sha256) or label in ("", "-"):
+                    unparsed += 1
+                elif labels.get(sha256, label) != label:
+                    _warn(f"{_readable(str(path))}: {sha256} carries two labels")
+                    return None
+                else:
+                    labels[sha256] = label
+    except OSError as exc:
+        _warn(f"{_readable(str(path))}: {exc.strerror}")
+        return None
+
+    if unparsed:
+        _warn(f"{_plural(unparsed, 'label line')} did not parse")
+    return labels
+
+
+def _labels_for(path: Path, entries: list[_Entry]) -> dict[str, str] | None:
+    labels = _read_labels(path)
+    if labels is None:
+        return None
+    bare = sum(1 for entry in entries if entry.sha256 not in labels)
+    if bare:
+        _warn(f"{_plural(bare, 'digest')} without a label")
+    return labels
+
+
+def _described(entry: _Entry, labels: dict[str, str] | None) -> str:
+    fields = [entry.sha256, entry.path]
+    if labels is not None:
+        fields = [labels.get(entry.sha256, "-"), *fields]
+    return "  ".join(_readable(field) for field in fields)
+
+
+def _as_member(entry: _Entry, labels: dict[str, str] | None) -> dict[str, str | None]:
+    label = None if labels is None else labels.get(entry.sha256)
+    return {"path": entry.path, "sha256": entry.sha256, "label": label}
+
+
+def _label_counts(held: list[_Entry], labels: dict[str, str] | None) -> dict[str, int] | None:
+    if labels is None:
+        return None
+    counts = Counter(labels[entry.sha256] for entry in held if entry.sha256 in labels)
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _summary(held: list[_Entry], counts: dict[str, int]) -> str:
+    parts = [f"{_readable(label)} {count}" for label, count in counts.items()]
+    bare = len(held) - sum(counts.values())
+    if bare:
+        parts.append(f"- {bare}")
+    return f"{_plural(len(held), 'digest')}: {', '.join(parts)}"
 
 
 def _run_match(args: argparse.Namespace) -> int:
@@ -400,23 +515,40 @@ def _run_match(args: argparse.Namespace) -> int:
     read = _read_digests(args.known)
     if read is None:
         return USAGE
-    labels, sketches, unparsed = read
-    kept = [pair for pair in zip(labels, sketches, strict=True) if pair[1].target == query.target]
-    other_target = len(sketches) - len(kept)
+    entries, unparsed = read
+    hashed_here = text != args.query
+    if hashed_here and entries and entries[0].eous != _installed_version():
+        _warn(
+            f"{_readable(str(args.known))}: written by eous {_readable(entries[0].eous)}, "
+            f"this is eous {_installed_version()}"
+        )
+        return USAGE
+    kept = [entry for entry in entries if entry.sketch.target == query.target]
+    other_target = len(entries) - len(kept)
 
     if not kept:
         _warn(f"{_readable(str(args.known))}: contains no {query.target} digest")
         return USAGE
 
-    rows = digest.unpack_all([sketch for _, sketch in kept])
-    cardinalities = digest.cardinalities([sketch for _, sketch in kept])
-    scored, spread = digest.score(rows, cardinalities, digest.unpack(query), query.cardinality)
-    order = sorted(
-        zip(scored, spread, (label for label, _ in kept), strict=True), key=lambda row: -row[0]
+    labels = None
+    if args.labels is not None:
+        labels = _labels_for(args.labels, kept)
+        if labels is None:
+            return USAGE
+
+    sketches = [entry.sketch for entry in kept]
+    scored, spread = digest.score(
+        digest.unpack_all(sketches),
+        digest.cardinalities(sketches),
+        digest.unpack(query),
+        query.cardinality,
     )
+    order = sorted(zip(scored, spread, kept, strict=True), key=lambda row: -row[0])
     cleared = [row for row in order if row[0] >= args.minimum]
     ranked = cleared[: args.top]
     below_minimum = len(order) - len(cleared)
+    shown = [entry for _, _, entry in ranked]
+    counts = _label_counts(shown, labels)
 
     if args.json:
         print(
@@ -428,18 +560,21 @@ def _run_match(args: argparse.Namespace) -> int:
                     "skipped_other_target": other_target,
                     "unparsed": unparsed,
                     "below_minimum": below_minimum,
+                    "labels": counts,
                     "matches": [
-                        {"label": label, **_rounded(score, margin)}
-                        for score, margin, label in ranked
+                        {**_as_member(entry, labels), **_rounded(score, margin)}
+                        for score, margin, entry in ranked
                     ],
                 },
                 indent=1,
             )
         )
     else:
-        for score, margin, label in ranked:
-            print(f"{_scored(score, margin)}  {_readable(label)}")
+        for score, margin, entry in ranked:
+            print(f"{_scored(score, margin)}  {_described(entry, labels)}")
 
+    if counts is not None and len(shown) > 1:
+        _warn(_summary(shown, counts))
     if other_target:
         _warn(f"{_plural(other_target, 'digest')} skipped, built for another target")
     if below_minimum:
@@ -458,14 +593,16 @@ def _run_cross(args: argparse.Namespace) -> int:
     read = _read_digests(args.known)
     if read is None:
         return USAGE
-    labels, sketches, unparsed = read
+    entries, unparsed = read
+    paths = [entry.path for entry in entries]
+    sketches = [entry.sketch for entry in entries]
 
     grouped = {target: rows for target, rows in _by_target(sketches).items() if len(rows) > 1}
     if not grouped:
         _warn(f"{_readable(str(args.known))}: contains fewer than two digests of any one target")
         return USAGE
 
-    shown = [_readable(label) for label in labels]
+    shown = [_readable(path) for path in paths]
     targets = list(grouped)
     alone = len(sketches) - sum(len(grouped[target]) for target in targets)
     below_minimum = 0
@@ -506,8 +643,8 @@ def _run_cross(args: argparse.Namespace) -> int:
                     print(
                         json.dumps(
                             {
-                                "left": labels[left],
-                                "right": labels[right],
+                                "left": paths[left],
+                                "right": paths[right],
                                 "target": target,
                                 **_rounded(score, margin),
                             }
@@ -531,11 +668,18 @@ def _run_cluster(args: argparse.Namespace) -> int:
     read = _read_digests(args.known)
     if read is None:
         return USAGE
-    labels, sketches, unparsed = read
+    entries, unparsed = read
+    sketches = [entry.sketch for entry in entries]
 
     if not sketches:
         _warn(f"{_readable(str(args.known))}: contains no digest")
         return USAGE
+
+    labels = None
+    if args.labels is not None:
+        labels = _labels_for(args.labels, entries)
+        if labels is None:
+            return USAGE
 
     grouped = _by_target(sketches)
     total = 0
@@ -559,16 +703,25 @@ def _run_cluster(args: argparse.Namespace) -> int:
         alone += sum(1 for places in found if len(places) == 1)
         for number, places in enumerate(found, start=1):
             name = f"{target}:{number}"
-            held = [labels[members[place]] for place in places]
+            held = [entries[members[place]] for place in places]
+            counts = _label_counts(held, labels)
             if args.json:
                 print(
                     json.dumps(
-                        {"cluster": name, "target": target, "size": len(held), "members": held}
+                        {
+                            "cluster": name,
+                            "target": target,
+                            "size": len(held),
+                            "labels": counts,
+                            "members": [_as_member(entry, labels) for entry in held],
+                        }
                     )
                 )
             else:
-                for label in held:
-                    print(f"{name}  {_readable(label)}")
+                if counts is not None and len(held) > 1:
+                    print(f"{name}  {_summary(held, counts)}")
+                for entry in held:
+                    print(f"{name}  {_described(entry, labels)}")
 
     if args.json:
         print(json.dumps({"clusters": total, "singletons": alone}))
@@ -671,10 +824,12 @@ def _print_line(result: report.Analysis, labelled: bool, quiet: bool) -> None:
 
 def _as_record(result: report.Analysis) -> dict[str, object]:
     return {
-        "path": str(result.path),
+        "sha256": result.sha256,
         "digest": result.digest,
+        "path": str(result.path),
         "reason": result.refusal.reason if result.refusal else None,
         "detail": result.refusal.detail if result.refusal else None,
+        "eous": _installed_version(),
     }
 
 

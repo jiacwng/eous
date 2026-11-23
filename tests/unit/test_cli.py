@@ -1,6 +1,7 @@
 # The eous command line end to end: the five commands, their output, exit codes and refusals.
 
 import errno
+import hashlib
 import io
 import json
 import os
@@ -95,8 +96,7 @@ def test_a_directory_carries_its_paths_into_json(
 ) -> None:
     plant(tmp_path, "one.exe", "sub/two.exe")
     cli.main(["hash", "--json", str(tmp_path)])
-    payload = json.loads(capsys.readouterr().out)
-    assert [row["path"] for row in payload["results"]] == [
+    assert [row["path"] for row in records(capsys.readouterr().out)] == [
         str(tmp_path / "one.exe"),
         str(tmp_path / "sub" / "two.exe"),
     ]
@@ -233,11 +233,22 @@ def test_a_name_the_terminal_cannot_encode_is_escaped(tmp_path: Path) -> None:
     assert process.stdout.count(b"EO1:") == 2
 
 
-def test_json_output_parses(capsys: pytest.CaptureFixture[str]) -> None:
-    cli.main(["hash", "--json", str(PE64)])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["results"][0]["digest"].startswith("EO1:")
-    assert payload["results"][0]["path"].endswith("fixture-pe-x64.exe")
+def records(printed: str) -> list[dict[str, object]]:
+    return [json.loads(line) for line in printed.splitlines()]
+
+
+def test_hash_json_writes_one_record_per_file(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["hash", "--json", str(PE64), str(ELF64)]) == cli.OK
+    first, second = records(capsys.readouterr().out)
+    assert first == {
+        "sha256": hashlib.sha256(PE64.read_bytes()).hexdigest(),
+        "digest": digest_of(PE64),
+        "path": str(PE64),
+        "reason": None,
+        "detail": None,
+        "eous": version("eous"),
+    }
+    assert second["path"] == str(ELF64)
 
 
 def test_json_carries_the_refusal_on_stdout_alone(
@@ -247,19 +258,30 @@ def test_json_carries_the_refusal_on_stdout_alone(
     target.write_bytes(JUNK)
     cli.main(["hash", "--json", str(target)])
     captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert payload["results"][0]["digest"] is None
-    assert payload["results"][0]["reason"] == "unreadable"
+    [record] = records(captured.out)
+    assert record["digest"] is None
+    assert record["reason"] == "unreadable"
+    assert record["sha256"] is None
     assert captured.err == ""
 
 
-def test_every_json_document_opens_with_the_versions(
+def test_a_refused_container_keeps_its_sha256(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "cut.exe"
+    target.write_bytes(PE64.read_bytes()[:200])
+    assert cli.main(["hash", "--json", str(target)]) == cli.REFUSED
+    [record] = records(capsys.readouterr().out)
+    assert record["digest"] is None
+    assert record["sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+def test_every_json_report_opens_with_the_versions(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     known = known_file(tmp_path, PE64, PE64)
     meta = {"eous": version("eous"), "iced-x86": _native.ICED_X86, "lief": version("lief")}
     for args in (
-        ["hash", "--json", str(PE64)],
         ["compare", "--json", str(PE64), str(PE64)],
         ["match", "--json", str(PE64), str(known)],
         ["cross", "--json", str(known)],
@@ -404,7 +426,9 @@ HOSTILE_SECTION = ".text\x1b[2K\reous: /bin/ls: unreadable: no recognised contai
 
 def hostile_refusal(path: Path) -> report.Analysis:
     detail = f"executable section {HOSTILE_SECTION} is writable"
-    return report.Analysis(path=path, digest=None, refusal=report.Refusal(report.PACKED, detail))
+    return report.Analysis(
+        path=path, sha256=None, digest=None, refusal=report.Refusal(report.PACKED, detail)
+    )
 
 
 def test_a_section_name_cannot_forge_a_refusal_line(
@@ -426,8 +450,10 @@ def test_a_file_name_cannot_forge_a_digest_line(
 ) -> None:
     hostile = Path("a\nEO1:pe64:9999:" + "f" * 128)
     digested = [
-        report.Analysis(path=hostile, digest="EO1:pe64:1:" + "0" * 128, refusal=None),
-        report.Analysis(path=Path(PE64), digest="EO1:pe64:2:" + "0" * 128, refusal=None),
+        report.Analysis(path=hostile, sha256=None, digest="EO1:pe64:1:" + "0" * 128, refusal=None),
+        report.Analysis(
+            path=Path(PE64), sha256=None, digest="EO1:pe64:2:" + "0" * 128, refusal=None
+        ),
     ]
     monkeypatch.setattr(cli, "_expand", lambda paths: ([hostile, Path(PE64)], []))
     monkeypatch.setattr(cli, "_analyse", lambda paths: iter(digested))
@@ -476,7 +502,7 @@ def test_a_file_past_its_deadline_costs_only_its_own_file(
     monkeypatch.setattr(pool, "TIME_BASE", 5.0)
     assert cli.main(["hash", "--json", str(tmp_path)]) == cli.REFUSED
 
-    results = json.loads(capsys.readouterr().out)["results"]
+    results = records(capsys.readouterr().out)
     assert [row["path"] for row in results] == [
         str(tmp_path / name) for name in ("stall.exe", "t.exe", "u.exe")
     ]
@@ -494,11 +520,29 @@ def test_compare_gives_a_file_the_same_deadline_as_hash(
     assert "time limit" in capsys.readouterr().err
 
 
-def known_file(tmp_path: Path, *paths: Path, labelled: bool = True) -> Path:
-    target = tmp_path / "known.txt"
-    lines = [f"{path}  {digest_of(path)}" if labelled else digest_of(path) for path in paths]
-    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def sha256_at(place: int) -> str:
+    return f"{place:064x}"
+
+
+def record_line(name: str, text: str, place: int, written: str | None = None) -> str:
+    record = {
+        "sha256": sha256_at(place),
+        "digest": text,
+        "path": name,
+        "eous": written or version("eous"),
+    }
+    return json.dumps(record) + "\n"
+
+
+def store(tmp_path: Path, *named: tuple[str, str]) -> Path:
+    target = tmp_path / "known.jsonl"
+    lines = [record_line(name, text, place) for place, (name, text) in enumerate(named)]
+    target.write_text("".join(lines), encoding="utf-8")
     return target
+
+
+def known_file(tmp_path: Path, *paths: Path) -> Path:
+    return store(tmp_path, *((str(path), digest_of(path)) for path in paths))
 
 
 def args_for(command: str, known: Path) -> list[str]:
@@ -512,7 +556,7 @@ def args_for(command: str, known: Path) -> list[str]:
 def test_match_ranks_the_closest_first(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     known = known_file(tmp_path, PE64, ELF64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(f"weaker  {weaker(digest_of(PE64))}\n")
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known)]) == cli.OK
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
@@ -522,19 +566,11 @@ def test_match_ranks_the_closest_first(tmp_path: Path, capsys: pytest.CaptureFix
     assert "weaker" in lines[1]
 
 
-def test_match_reads_the_bare_digest_form_hash_writes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    known = known_file(tmp_path, PE64, labelled=False)
-    assert cli.main(["match", str(PE64), str(known)]) == cli.OK
-    assert capsys.readouterr().out.splitlines()[0].startswith("100.0%")
-
-
 def test_match_reads_a_digests_file_that_starts_with_a_byte_order_mark(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    known = tmp_path / "known.txt"
-    known.write_text(digest_of(PE64) + "\n", encoding="utf-8-sig")
+    known = tmp_path / "known.jsonl"
+    known.write_text(record_line("one", digest_of(PE64), 0), encoding="utf-8-sig")
     assert cli.main(["match", str(PE64), str(known)]) == cli.OK
     captured = capsys.readouterr()
     assert captured.out.startswith("100.0%")
@@ -618,8 +654,7 @@ def test_a_hostile_label_is_escaped(
     command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     text = digest_of(PE64)
-    known = tmp_path / "known.txt"
-    known.write_text(f"a\x1b[2Kb  {text}\nplain  {text}\n", encoding="utf-8")
+    known = store(tmp_path, ("a\x1b[2Kb", text), ("plain", text))
     assert cli.main(args_for(command, known)) == cli.OK
     printed = capsys.readouterr().out
     assert "\x1b" not in printed
@@ -677,7 +712,7 @@ def test_match_holds_back_anything_below_the_minimum(
 ) -> None:
     known = known_file(tmp_path, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(f"weaker  {weaker(digest_of(PE64))}\n")
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known), "--min", "99"]) == cli.OK
     captured = capsys.readouterr()
@@ -700,7 +735,7 @@ def test_match_json_counts_what_the_minimum_held_back(
 ) -> None:
     known = known_file(tmp_path, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(f"weaker  {weaker(digest_of(PE64))}\n")
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known), "--min", "99", "--json"]) == cli.OK
     payload = json.loads(capsys.readouterr().out)
@@ -711,7 +746,7 @@ def test_match_json_counts_what_the_minimum_held_back(
 def test_the_minimum_applies_before_top(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     known = known_file(tmp_path, PE64, PE64)
     with known.open("a", encoding="utf-8") as handle:
-        handle.write(f"weaker  {weaker(digest_of(PE64))}\n")
+        handle.write(record_line("weaker", weaker(digest_of(PE64)), 99))
 
     assert cli.main(["match", str(PE64), str(known), "--top", "3", "--min", "99"]) == cli.OK
     assert len([line for line in capsys.readouterr().out.splitlines() if line]) == 2
@@ -728,8 +763,7 @@ def test_cross_scores_every_pair_once(tmp_path: Path, capsys: pytest.CaptureFixt
 def test_cross_names_both_sides_of_a_pair(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    known = tmp_path / "known.txt"
-    known.write_text(f"left  {digest_of(PE64)}\nright  {digest_of(PE64)}\n", encoding="utf-8")
+    known = store(tmp_path, ("left", digest_of(PE64)), ("right", digest_of(PE64)))
     assert cli.main(["cross", str(known)]) == cli.OK
     line = capsys.readouterr().out.splitlines()[0]
     assert line.startswith("100.0%")
@@ -748,8 +782,7 @@ def test_cross_holds_back_anything_below_the_minimum(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     text = digest_of(PE64)
-    known = tmp_path / "known.txt"
-    known.write_text(f"a  {text}\nb  {text}\nc  {weaker(text)}\n", encoding="utf-8")
+    known = store(tmp_path, ("a", text), ("b", text), ("c", weaker(text)))
 
     assert cli.main(["cross", str(known), "--min", "99"]) == cli.OK
     captured = capsys.readouterr()
@@ -796,11 +829,7 @@ def test_cross_and_match_agree_on_every_pair(
         for step, cardinality in enumerate(cardinalities)
     ]
     by_name = dict(zip(names, weakened, strict=True))
-    known = tmp_path / "known.txt"
-    known.write_text(
-        "".join(f"{name}  {value}\n" for name, value in zip(names, weakened, strict=True)),
-        encoding="utf-8",
-    )
+    known = store(tmp_path, *zip(names, weakened, strict=True))
 
     assert cli.main(["cross", str(known), "--json"]) == cli.OK
     rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
@@ -810,10 +839,10 @@ def test_cross_and_match_agree_on_every_pair(
     for name, value in zip(names, weakened, strict=True):
         assert cli.main(["match", value, str(known), "--top", "99", "--json"]) == cli.OK
         for row in json.loads(capsys.readouterr().out)["matches"]:
-            pair = (name, row["label"])
+            pair = (name, row["path"])
             if pair in from_cross:
                 assert from_cross[pair] == pytest.approx(row["similarity"])
-            expected = digest.compare(digest.parse(value), digest.parse(by_name[row["label"]]))
+            expected = digest.compare(digest.parse(value), digest.parse(by_name[row["path"]]))
             assert row["similarity"] == pytest.approx(expected.similarity, abs=1e-4)
 
 
@@ -821,12 +850,15 @@ def test_cluster_gives_every_digest_a_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     text = digest_of(PE64)
-    known = tmp_path / "known.txt"
-    known.write_text(f"a  {text}\nc  {weaker(text)}\nb  {text}\n", encoding="utf-8")
+    known = store(tmp_path, ("a", text), ("c", weaker(text)), ("b", text))
 
     assert cli.main(["cluster", str(known), "--min", "99"]) == cli.OK
     captured = capsys.readouterr()
-    assert captured.out.splitlines() == ["pe64:1  a", "pe64:1  b", "pe64:2  c"]
+    assert captured.out.splitlines() == [
+        f"pe64:1  {sha256_at(0)}  a",
+        f"pe64:1  {sha256_at(2)}  b",
+        f"pe64:2  {sha256_at(1)}  c",
+    ]
     assert "3 digests in 2 clusters, 1 holding one digest" in captured.err
 
 
@@ -850,9 +882,9 @@ def test_cluster_json_writes_one_object_per_cluster(
     assert header["digests"] == 3
     assert header["targets"] == ["pe64", "elf64"]
     assert header["unparsed"] == 0
-    assert found == [
-        {"cluster": "pe64:1", "target": "pe64", "size": 2, "members": [str(PE64), str(PE64)]},
-        {"cluster": "elf64:1", "target": "elf64", "size": 1, "members": [str(ELF64)]},
+    assert [(row["cluster"], row["size"]) for row in found] == [("pe64:1", 2), ("elf64:1", 1)]
+    assert found[0]["members"] == [
+        {"path": str(PE64), "sha256": sha256_at(place), "label": None} for place in (0, 2)
     ]
     assert summary == {"clusters": 2, "singletons": 1}
 
@@ -860,11 +892,10 @@ def test_cluster_json_writes_one_object_per_cluster(
 def test_cluster_gives_a_lone_digest_its_own_cluster(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    known = tmp_path / "known.txt"
-    known.write_text(f"one  {digest_of(PE64)}\n", encoding="utf-8")
+    known = store(tmp_path, ("one", digest_of(PE64)))
     assert cli.main(["cluster", str(known), "--min", "100"]) == cli.OK
     captured = capsys.readouterr()
-    assert captured.out.splitlines() == ["pe64:1  one"]
+    assert captured.out.splitlines() == [f"pe64:1  {sha256_at(0)}  one"]
     assert "1 digest in 1 cluster, 1 holding one digest" in captured.err
 
 
@@ -946,10 +977,254 @@ def test_an_unreadable_directory_alone_is_a_json_refusal(
         assert cli.main(["hash", "--json", str(locked)]) == cli.REFUSED
     finally:
         locked.chmod(0o700)
-    [record] = json.loads(capsys.readouterr().out)["results"]
+    [record] = records(capsys.readouterr().out)
     assert record == {
-        "path": str(locked),
+        "sha256": None,
         "digest": None,
+        "path": str(locked),
         "reason": "unreadable",
         "detail": "Permission denied",
+        "eous": version("eous"),
     }
+
+
+def test_match_reads_what_hash_json_writes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    junk = tmp_path / "junk.bin"
+    junk.write_bytes(JUNK)
+    assert cli.main(["hash", "--json", str(PE64), str(junk), str(ELF64)]) == cli.REFUSED
+    known = tmp_path / "known.jsonl"
+    known.write_text(capsys.readouterr().out, encoding="utf-8")
+
+    assert cli.main(["match", str(PE64), str(known)]) == cli.OK
+    captured = capsys.readouterr()
+    sha256 = hashlib.sha256(PE64.read_bytes()).hexdigest()
+    assert captured.out.splitlines() == [f"100.0% +/- 0.5  {sha256}  {PE64}"]
+    assert "did not parse" not in captured.err
+
+
+@pytest.mark.parametrize("command", ["match", "cross", "cluster"])
+def test_a_sha256_read_twice_counts_once(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64, PE64)
+    with known.open("a", encoding="utf-8") as handle:
+        handle.write(record_line("again", digest_of(PE64), 0))
+    assert cli.main(args_for(command, known)) == cli.OK
+    captured = capsys.readouterr()
+    assert "again" not in captured.out
+    assert "1 digest skipped, sha256 already read" in captured.err
+
+
+@pytest.mark.parametrize("command", ["match", "cross", "cluster"])
+def test_digests_of_two_eous_versions_are_a_usage_error(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64, PE64)
+    with known.open("a", encoding="utf-8") as handle:
+        handle.write(record_line("older", digest_of(PE64), 99, written="0.0.1"))
+    assert cli.main(args_for(command, known)) == cli.USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"holds digests of several eous versions: 0.0.1, {version('eous')}" in captured.err
+
+
+def test_match_refuses_a_file_against_digests_of_another_eous_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = tmp_path / "known.jsonl"
+    known.write_text(record_line("older", digest_of(PE64), 0, written="0.0.1"), encoding="utf-8")
+    assert cli.main(["match", str(PE64), str(known)]) == cli.USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"written by eous 0.0.1, this is eous {version('eous')}" in captured.err
+
+    assert cli.main(["match", digest_of(PE64), str(known)]) == cli.OK
+    assert len(capsys.readouterr().out.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "[1, 2]",
+        "{",
+        "[" * 100_000,
+        json.dumps({"digest": "EO1:pe64:1:" + "0" * 128, "path": "p", "eous": "1"}),
+        json.dumps(
+            {"sha256": "0" * 63, "digest": "EO1:pe64:1:" + "0" * 128, "path": "p", "eous": "1"}
+        ),
+        json.dumps({"sha256": 5, "digest": 5, "path": 5, "eous": 5}),
+        json.dumps(
+            {"sha256": "g" * 64, "digest": "EO1:pe64:1:" + "0" * 128, "path": "p", "eous": "1"}
+        ),
+        json.dumps(
+            {
+                "sha256": "0" * 64 + "\n",
+                "digest": "EO1:pe64:1:" + "0" * 128,
+                "path": "p",
+                "eous": "1",
+            }
+        ),
+        json.dumps({"sha256": "1" * 64, "digest": "EO1:pe64:1:" + "0" * 128, "path": "p"}),
+    ],
+    ids=[
+        "a list",
+        "cut short",
+        "nested deep",
+        "no sha256",
+        "short sha256",
+        "numbers",
+        "sha256 not hex",
+        "sha256 with a newline",
+        "no eous",
+    ],
+)
+def test_a_malformed_record_is_counted_and_skipped(
+    broken: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64)
+    with known.open("a", encoding="utf-8") as handle:
+        handle.write(broken + "\n")
+    assert cli.main(["match", str(PE64), str(known)]) == cli.OK
+    captured = capsys.readouterr()
+    assert len(captured.out.splitlines()) == 1
+    assert "1 line did not parse" in captured.err
+
+
+def labels_file(tmp_path: Path, text: str) -> Path:
+    target = tmp_path / "labels.tsv"
+    target.write_text(text, encoding="utf-8")
+    return target
+
+
+def test_match_shows_the_label_of_each_result(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = store(tmp_path, ("one", digest_of(PE64)), ("two", weaker(digest_of(PE64))))
+    labels = labels_file(tmp_path, f"{sha256_at(0).upper()}\tAgent Tesla\n{sha256_at(7)}\tMirai\n")
+    assert cli.main(["match", str(PE64), str(known), "--labels", str(labels)]) == cli.OK
+    captured = capsys.readouterr()
+    first, second = captured.out.splitlines()
+    assert first == f"100.0% +/- 0.5  Agent Tesla  {sha256_at(0)}  one"
+    assert second.endswith(f"  -  {sha256_at(1)}  two")
+    assert "1 digest without a label" in captured.err
+
+
+def test_match_json_carries_the_label(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    known = store(tmp_path, ("one", digest_of(PE64)), ("two", weaker(digest_of(PE64))))
+    labels = labels_file(tmp_path, f"{sha256_at(0)}\tMirai\n")
+    assert cli.main(["match", str(PE64), str(known), "--labels", str(labels), "--json"]) == cli.OK
+    matches = json.loads(capsys.readouterr().out)["matches"]
+    assert [(row["path"], row["sha256"], row["label"]) for row in matches] == [
+        ("one", sha256_at(0), "Mirai"),
+        ("two", sha256_at(1), None),
+    ]
+
+
+def test_cluster_shows_the_label_of_each_digest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = store(tmp_path, ("one", digest_of(PE64)), ("two", digest_of(PE64)))
+    labels = labels_file(tmp_path, f"{sha256_at(0)}\tMirai\n{sha256_at(1)}\tGafgyt\n")
+    assert cli.main(["cluster", str(known), "--min", "90", "--labels", str(labels)]) == cli.OK
+    assert capsys.readouterr().out.splitlines() == [
+        "pe64:1  2 digests: Gafgyt 1, Mirai 1",
+        f"pe64:1  Mirai  {sha256_at(0)}  one",
+        f"pe64:1  Gafgyt  {sha256_at(1)}  two",
+    ]
+
+
+def test_cluster_counts_the_labels_of_each_cluster(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    named = [(name, digest_of(PE64)) for name in ("one", "two", "three", "four")]
+    known = store(tmp_path, *named, ("apart", digest_of(ELF64)))
+    labels = labels_file(
+        tmp_path, f"{sha256_at(0)}\tMirai\n{sha256_at(1)}\tGafgyt\n{sha256_at(2)}\tMirai\n"
+    )
+    arguments = ["cluster", str(known), "--min", "90", "--labels", str(labels)]
+
+    assert cli.main(arguments) == cli.OK
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "pe64:1  4 digests: Mirai 2, Gafgyt 1, - 1"
+    assert len(lines) == 6
+    assert lines[5].startswith("elf64:1  -  ")
+
+    assert cli.main([*arguments, "--json"]) == cli.OK
+    found = [json.loads(row) for row in capsys.readouterr().out.splitlines()][1:3]
+    assert [row["labels"] for row in found] == [{"Mirai": 2, "Gafgyt": 1}, {}]
+
+    assert cli.main(["cluster", str(known), "--min", "90", "--json"]) == cli.OK
+    assert json.loads(capsys.readouterr().out.splitlines()[1])["labels"] is None
+
+
+def test_match_counts_the_labels_it_shows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = store(
+        tmp_path,
+        ("one", digest_of(PE64)),
+        ("two", digest_of(PE64)),
+        ("three", weaker(digest_of(PE64))),
+    )
+    labels = labels_file(tmp_path, f"{sha256_at(0)}\tMirai\n{sha256_at(1)}\tMirai\n")
+    arguments = ["match", str(PE64), str(known), "--labels", str(labels)]
+
+    assert cli.main(arguments) == cli.OK
+    assert "eous: 3 digests: Mirai 2, - 1" in capsys.readouterr().err
+
+    assert cli.main([*arguments, "--top", "1"]) == cli.OK
+    assert "digests:" not in capsys.readouterr().err
+
+    assert cli.main([*arguments, "--top", "2", "--json"]) == cli.OK
+    assert json.loads(capsys.readouterr().out)["labels"] == {"Mirai": 2}
+
+
+@pytest.mark.parametrize("command", ["match", "cluster"])
+def test_a_sha256_with_two_labels_is_a_usage_error(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64, PE64)
+    labels = labels_file(tmp_path, f"{sha256_at(0)}\tMirai\n{sha256_at(0)}\tGafgyt\n")
+    assert cli.main([*args_for(command, known), "--labels", str(labels)]) == cli.USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"{sha256_at(0)} carries two labels" in captured.err
+
+
+def test_a_malformed_label_line_is_counted_and_skipped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64)
+    labels = labels_file(
+        tmp_path,
+        f"no tab here\nshort\tMirai\n{sha256_at(0)}\t\n\n"
+        f"{sha256_at(0)}\t-\n{sha256_at(0)}\tMirai\n",
+    )
+    assert cli.main(["match", str(PE64), str(known), "--labels", str(labels)]) == cli.OK
+    captured = capsys.readouterr()
+    assert "  Mirai  " in captured.out
+    assert "4 label lines did not parse" in captured.err
+
+
+def test_a_hostile_family_label_is_escaped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64)
+    labels = labels_file(tmp_path, f"{sha256_at(0)}\tMirai\x1b[2K\tsecond\n")
+    assert cli.main(["match", str(PE64), str(known), "--labels", str(labels)]) == cli.OK
+    printed = capsys.readouterr().out
+    assert "\x1b" not in printed
+    assert r"Mirai\x1b[2K\x09second" in printed
+
+
+def test_an_absent_labels_file_is_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = known_file(tmp_path, PE64)
+    absent = tmp_path / "absent.tsv"
+    assert cli.main(["match", str(PE64), str(known), "--labels", str(absent)]) == cli.USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "No such file" in captured.err

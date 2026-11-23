@@ -41,26 +41,28 @@ containment: rg-14.0.0.exe in rg-14.1.0.exe   89.9%
              rg-14.1.0.exe in rg-14.0.0.exe   90.7%
 ```
 
-`match` ranks a list of digests against one file, closest first.
+`match` ranks a list of digests against one file, closest first. `hash --json` writes that
+list, one line per file with its sha256.
 
 ```
-$ eous hash samples/ > known.txt
-$ eous match suspect.exe known.txt
- 70.8% +/- 3.6  samples/rg-14.1.0.exe
- 67.7% +/- 3.7  samples/rg-14.0.0.exe
- 54.2% +/- 4.0  samples/rg-13.0.0.exe
- 44.3% +/- 4.1  samples/fd-10.2.0.exe
+$ eous hash --json samples/ > known.jsonl
+$ eous match suspect.exe known.jsonl
+ 70.8% +/- 3.6  37b10903cc0f...  samples/rg-14.1.0.exe
+ 67.7% +/- 3.7  18ffabc518bb...  samples/rg-14.0.0.exe
+ 54.2% +/- 4.0  4125309a857e...  samples/rg-13.0.0.exe
+ 44.3% +/- 4.1  afacf221d0d2...  samples/fd-10.2.0.exe
 ```
 
 `cross` scores every pair in a list of digests. Pairs print in scan order, so memory stays
 flat on a large list. Pipe through `sort -rn` to read them best first.
 
 ```
-$ eous cross known.txt --min 55 | sort -rn
+$ eous cross known.jsonl --min 55 | sort -rn
 ```
 
-Every command takes `--json`. `match` takes `--top N` and `--min PERCENT`. `cross` takes
-`--min PERCENT`.
+Every command takes `--json`. `match` takes `--top N`, `--min PERCENT` and `--labels FILE`.
+`cross` takes `--min PERCENT`. A labels file holds a sha256, a tab and a name on each line.
+`match` then prints the name beside each result.
 
 Use scores to rank files, not as a yes or no. Programs written in the same language share
 library code, so unrelated programs never score near zero. In the example, fd scores 44%
