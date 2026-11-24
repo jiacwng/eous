@@ -60,9 +60,41 @@ flat on a large list. Pipe through `sort -rn` to read them best first.
 $ eous cross known.jsonl --min 55 | sort -rn
 ```
 
-Every command takes `--json`. `match` takes `--top N`, `--min PERCENT` and `--labels FILE`.
-`cross` takes `--min PERCENT`. A labels file holds a sha256, a tab and a name on each line.
-`match` then prints the name beside each result.
+`cluster` groups a list of digests. Two files share a cluster when a chain of pairs scoring
+at least `--min` joins them.
+
+```
+$ eous cluster known.jsonl --min 55
+pe32:1  afacf221d0d2...  samples/fd-10.2.0.exe
+pe32:2  4125309a857e...  samples/rg-13.0.0.exe
+pe32:2  18ffabc518bb...  samples/rg-14.0.0.exe
+pe32:2  37b10903cc0f...  samples/rg-14.1.0.exe
+```
+
+`functions` compares one file with a list function by function. `hash --json --functions`
+writes that list, with one digest for each function of 256 bytes or more. The first lines
+rank the stored files by how much of their function code matches. Then each function of the
+file gets a line: its address, its size, its best score, how many stored files hold a match,
+and where the best match is.
+
+```
+$ eous hash --json --functions samples/ > functions.jsonl
+$ eous functions suspect.exe functions.jsonl --sort score
+functions  52.8%  file  70.8% +/- 3.6  37b10903cc0f...  samples/rg-14.1.0.exe
+functions  48.0%  file  67.7% +/- 3.7  18ffabc518bb...  samples/rg-14.0.0.exe
+functions  13.6%  file  54.2% +/- 4.0  4125309a857e...  samples/rg-13.0.0.exe
+functions   8.5%  file  44.3% +/- 4.1  afacf221d0d2...  samples/fd-10.2.0.exe
+
+0x4465e0  277 bytes  100.0%  2 files  37b10903cc0f...:0x45a950
+0x4674c0  276 bytes  100.0%  4 files  18ffabc518bb...:0x47a910
+0x48ab20  485 bytes  100.0%  4 files  18ffabc518bb...:0x4b7830
+```
+
+Every command takes `--json`. `match` and `cross` take `--min PERCENT`. `match` and
+`functions` take `--top N`. `match`, `cross`, `cluster` and `functions` take `--labels FILE`.
+A labels file holds a sha256, a tab and a name on each line. The name is then printed beside
+each file. `functions` also takes `--sort` and `--names FILE`, a file of sha256, address and
+function name.
 
 Use scores to rank files, not as a yes or no. Programs written in the same language share
 library code, so unrelated programs never score near zero. In the example, fd scores 44%
@@ -149,6 +181,8 @@ eous hashes a file in 14.8 ms on one core. tlsh takes 18.1 ms and ssdeep 21.0 ms
 - eous cannot match malware samples that share no code, even when they carry the same family
   name. This is why eous scores lower than tlsh on MOTIF. One family there, IcedID, has 142
   samples whose code barely overlaps. Without IcedID, eous and tlsh score the same.
+- `functions` finds a function when something calls it directly or when it is an entry
+  point. It misses a function reached only through a pointer.
 - Digests only compare within one target: pe32, pe64, elf32 or elf64.
 
 ## Digest format
