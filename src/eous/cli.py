@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import contextlib
 import errno
 import io
@@ -16,7 +17,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 import numpy
 
@@ -152,7 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
         "cross",
         help="score every pair in a file of digests",
         description="Score each digest in a file against every other, in the order they "
-        "were read. The file is what `eous hash --json` writes. Pairs are scored inside each "
+        "were read. The file is what `eous hash --json` writes. Each line is a score, then "
+        "the paths of the two digests. With --labels the label of each digest comes before "
+        "its path. Pairs are scored inside each "
         "target, since two digests compare only when their targets match, and the "
         "targets follow in the order they first appear.",
     )
@@ -219,7 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="a file of sha256, a tab, a hexadecimal address, a tab, then a function name",
     )
 
-    for command in (match_command, cluster_command, functions_command):
+    for command in (match_command, cross_command, cluster_command, functions_command):
         command.add_argument(
             "--labels",
             type=Path,
@@ -434,6 +437,15 @@ class _Entry:
     functions: object
 
 
+def _open_text(path: Path) -> TextIO:
+    # Windows tools put a byte-order mark in front of UTF-8 text, and the `>` of
+    # Windows PowerShell 5.1 writes UTF-16.
+    with path.open("rb") as handle:
+        mark = handle.read(2)
+    encoding = "utf-16" if mark in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE) else "utf-8-sig"
+    return path.open(encoding=encoding, errors="replace")
+
+
 def _read_digests(path: Path, functions: bool = False) -> tuple[list[_Entry], int] | None:
     entries: list[_Entry] = []
     seen: set[str] = set()
@@ -441,8 +453,7 @@ def _read_digests(path: Path, functions: bool = False) -> tuple[list[_Entry], in
     repeated = 0
 
     try:
-        # Some Windows tools put a byte-order mark in front of UTF-8 text.
-        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+        with _open_text(path) as handle:
             for line in handle:
                 if not line.strip():
                     continue
@@ -502,7 +513,7 @@ def _read_labels(path: Path) -> dict[str, str] | None:
     unparsed = 0
 
     try:
-        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+        with _open_text(path) as handle:
             for line in handle:
                 if not line.strip():
                     continue
@@ -666,7 +677,18 @@ def _run_cross(args: argparse.Namespace) -> int:
         _warn(f"{_readable(str(args.known))}: contains fewer than two digests of any one target")
         return USAGE
 
-    shown = [_readable(path) for path in paths]
+    labels = None
+    if args.labels is not None:
+        paired = [entries[index] for rows in grouped.values() for index in rows]
+        labels = _labels_for(args.labels, paired)
+        if labels is None:
+            return USAGE
+
+    named = [None if labels is None else labels.get(entry.sha256) for entry in entries]
+    shown = [
+        _readable(path) if labels is None else f"{_readable(name or '-')}  {_readable(path)}"
+        for name, path in zip(named, paths, strict=True)
+    ]
     targets = list(grouped)
     alone = len(sketches) - sum(len(grouped[target]) for target in targets)
     below_minimum = 0
@@ -709,6 +731,8 @@ def _run_cross(args: argparse.Namespace) -> int:
                             {
                                 "left": paths[left],
                                 "right": paths[right],
+                                "left_label": named[left],
+                                "right_label": named[right],
                                 "target": target,
                                 **_rounded(score, margin),
                             }
@@ -840,7 +864,7 @@ def _read_names(path: Path) -> dict[tuple[str, int], str] | None:
     unparsed = 0
 
     try:
-        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+        with _open_text(path) as handle:
             for line in handle:
                 if not line.strip():
                     continue
