@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import threading
 import time
 from functools import cache
 from importlib.metadata import version
@@ -1112,6 +1113,22 @@ def test_a_utf_16_digests_file_and_labels_file_are_read(
     captured = capsys.readouterr()
     assert captured.out == f"100.0% +/- 0.5  Mirai  {sha256_at(0)}  one\n"
     assert "did not parse" not in captured.err
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a named pipe")
+def test_a_digests_file_read_from_a_pipe_keeps_its_first_bytes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = known_file(tmp_path, PE64, PE64).read_bytes()
+    pipe = tmp_path / "pipe"
+    os.mkfifo(pipe)
+    writer = threading.Thread(target=pipe.write_bytes, args=(text,))
+    writer.start()
+    assert cli.main(["cross", str(pipe)]) == cli.OK
+    writer.join()
+    captured = capsys.readouterr()
+    assert captured.out.startswith("100.0%")
+    assert "1 pair scored" in captured.err
 
 
 def test_a_lone_utf_16_mark_is_an_empty_digests_file(

@@ -440,10 +440,10 @@ class _Entry:
 def _open_text(path: Path) -> TextIO:
     # Windows tools put a byte-order mark in front of UTF-8 text, and the `>` of
     # Windows PowerShell 5.1 writes UTF-16.
-    with path.open("rb") as handle:
-        mark = handle.read(2)
+    handle = path.open("rb")
+    mark = handle.peek(2)[:2]
     encoding = "utf-16" if mark in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE) else "utf-8-sig"
-    return path.open(encoding=encoding, errors="replace")
+    return io.TextIOWrapper(handle, encoding=encoding, errors="replace")
 
 
 def _read_digests(path: Path, functions: bool = False) -> tuple[list[_Entry], int] | None:
