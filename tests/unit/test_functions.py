@@ -39,7 +39,7 @@ def test_the_packed_score_is_the_score_of_two_digests() -> None:
     expected, _ = digest.score(
         digest.unpack_all(stored), digest.cardinalities(stored), digest.unpack(one), 70
     )
-    scored = functions.scores(table(*((256, s) for s in stored)), table((256, one)).words[0], 70)
+    scored = functions.scores(table(*((256, s) for s in stored)), table((256, one)).sketches, 70)
     assert numpy.allclose(scored, expected)
     assert expected.max() == 100.0
     assert 0.0 < numpy.median(expected) < 100.0
@@ -47,7 +47,7 @@ def test_the_packed_score_is_the_score_of_two_digests() -> None:
 
 def test_an_empty_cardinality_scores_without_dividing_by_zero() -> None:
     empty = digest.Sketch("pe64", 0, sketch(0).slots)
-    scored = functions.scores(table((256, empty)), table((256, empty)).words[0], 0)
+    scored = functions.scores(table((256, empty)), table((256, empty)).sketches, 0)
     assert scored.tolist() == [100.0]
 
 

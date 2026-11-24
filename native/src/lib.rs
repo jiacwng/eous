@@ -26,6 +26,8 @@ const ROOT_MASK: u64 = (1 << ROOT_BITS) - 1;
 const SHINGLE_MASK: u64 = (1 << (ROOT_BITS * NGRAM as u32)) - 1;
 const COMPACT_FLOOR: usize = 1 << 22;
 const FUNCTION_BYTES: u64 = 256;
+const SKETCH_BYTES: usize = PERMUTATIONS * SLOT_BITS as usize / 8;
+const SLOT_LOW_BITS: u64 = u64::MAX / ((1 << SLOT_BITS) - 1);
 
 struct Vocabulary {
     names: Vec<String>,
@@ -442,11 +444,47 @@ fn functions_of<S: AsRef<[u8]>>(
     Ok(found)
 }
 
+fn words(sketch: &[u8; SKETCH_BYTES]) -> impl Iterator<Item = u64> + '_ {
+    sketch
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .copied()
+        .map(u64::from_ne_bytes)
+}
+
+// How many slots of each packed sketch in `rows` differ from `one`, as native 16-bit counts.
+fn differing_slots(rows: &[u8], one: &[u8]) -> Result<Vec<u8>, String> {
+    let (rows, rest) = rows.as_chunks::<SKETCH_BYTES>();
+    let Ok(one) = <&[u8; SKETCH_BYTES]>::try_from(one) else {
+        return Err(format!("a sketch is {SKETCH_BYTES} bytes"));
+    };
+    if !rest.is_empty() {
+        return Err(format!("a sketch is {SKETCH_BYTES} bytes"));
+    }
+    let one: Vec<u64> = words(one).collect();
+    Ok(rows
+        .iter()
+        .flat_map(|row| {
+            let differing: u32 = words(row)
+                .zip(&one)
+                .map(|(left, right)| {
+                    let mixed = left ^ right;
+                    let any = (0..SLOT_BITS).fold(0, |any, shift| any | (mixed >> shift));
+                    (any & SLOT_LOW_BITS).count_ones()
+                })
+                .sum();
+            (differing as u16).to_ne_bytes()
+        })
+        .collect())
+}
+
 #[cfg(feature = "python")]
 mod python {
     use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
     use pyo3::pybacked::PyBackedBytes;
+    use pyo3::types::PyBytes;
 
     const ICED_X86: &str = "1.21.0";
 
@@ -473,10 +511,23 @@ mod python {
             .map_err(PyValueError::new_err)
     }
 
+    #[pyfunction]
+    fn differing_slots<'py>(
+        py: Python<'py>,
+        rows: PyBackedBytes,
+        one: PyBackedBytes,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let counts = py
+            .detach(|| super::differing_slots(&rows, &one))
+            .map_err(PyValueError::new_err)?;
+        Ok(PyBytes::new(py, &counts))
+    }
+
     #[pymodule]
     fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module.add_function(wrap_pyfunction!(digest, module)?)?;
         module.add_function(wrap_pyfunction!(functions, module)?)?;
+        module.add_function(wrap_pyfunction!(differing_slots, module)?)?;
         module.add("FUNCTION_BYTES", super::FUNCTION_BYTES)?;
         module.add("ICED_X86", ICED_X86)?;
         module.add("VERSION", super::VERSION)?;
@@ -662,6 +713,24 @@ mod tests {
     fn a_start_off_an_instruction_or_outside_the_code_is_dropped() {
         assert!(found(body(), &[BASE + 1, BASE - 1, u64::MAX]).is_empty());
         assert_eq!(places(&found(body(), &[BASE])), [(BASE, 301)]);
+    }
+
+    #[test]
+    fn a_slot_differs_once_however_many_of_its_bits_differ() {
+        let counts = |rows: &[u8], one: &[u8]| -> Vec<u16> {
+            let counted = differing_slots(rows, one).unwrap();
+            let (counts, _) = counted.as_chunks::<2>();
+            counts.iter().copied().map(u16::from_ne_bytes).collect()
+        };
+        let zero = vec![0u8; SKETCH_BYTES];
+        let mut rows = zero.repeat(4);
+        rows[SKETCH_BYTES] = 0b0000_0001;
+        rows[2 * SKETCH_BYTES + 9] = 0b0000_1110;
+        rows[3 * SKETCH_BYTES..].fill(0xff);
+        assert_eq!(counts(&rows, &zero), [0, 1, 2, PERMUTATIONS as u16]);
+        assert!(counts(&[], &zero).is_empty());
+        assert!(differing_slots(&rows[1..], &zero).is_err());
+        assert!(differing_slots(&rows, &zero[1..]).is_err());
     }
 
     #[test]

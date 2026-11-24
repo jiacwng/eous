@@ -12,19 +12,12 @@ from eous import _native, digest
 MATCH = 50.0
 FUNCTION_BYTES = _native.FUNCTION_BYTES
 
-WORD_BITS = 16
-WORDS = numpy.arange(1 << WORD_BITS, dtype=numpy.uint32)
-PLACES = numpy.arange(0, WORD_BITS, digest.SLOT_BITS, dtype=numpy.uint32)
-DIFFERING = numpy.count_nonzero((WORDS[:, None] >> PLACES) & digest.MASK, axis=1).astype(
-    numpy.uint8
-)
-
 
 @dataclass(frozen=True)
 class Table:
     lengths: numpy.ndarray
     cardinalities: numpy.ndarray
-    words: numpy.ndarray
+    sketches: bytes
 
 
 @dataclass(frozen=True)
@@ -40,13 +33,13 @@ def table(functions: Sequence[tuple[int, digest.Sketch]]) -> Table:
     return Table(
         numpy.array([length for length, _ in functions], dtype=numpy.float64),
         digest.cardinalities([sketch for _, sketch in functions]),
-        numpy.frombuffer(packed, dtype=numpy.uint16).reshape(len(functions), -1),
+        packed,
     )
 
 
-def scores(stored: Table, words: numpy.ndarray, cardinality: float) -> numpy.ndarray:
-    differing = DIFFERING[stored.words ^ words].sum(axis=1, dtype=numpy.float64)
-    agreed = 1 - differing / digest.PERMUTATIONS
+def scores(stored: Table, sketch: bytes, cardinality: float) -> numpy.ndarray:
+    counted = _native.differing_slots(stored.sketches, sketch)
+    agreed = 1 - numpy.frombuffer(counted, dtype=numpy.uint16) / digest.PERMUTATIONS
     similarity = numpy.maximum(0.0, (agreed - digest.FLOOR) / (1 - digest.FLOOR)) * 100
     smaller = numpy.minimum(stored.cardinalities, cardinality)
     larger = numpy.maximum(stored.cardinalities, cardinality)
@@ -65,8 +58,9 @@ def match(query: Table, stored: Table, starts: numpy.ndarray, names: numpy.ndarr
     named = numpy.full(len(query.lengths), -1, dtype=numpy.intp)
     in_query = numpy.zeros(len(stored.lengths), dtype=numpy.float64)
 
-    for row, (words, cardinality) in enumerate(zip(query.words, query.cardinalities, strict=True)):
-        scored = scores(stored, words, cardinality)
+    for row, cardinality in enumerate(query.cardinalities):
+        first = row * digest.SKETCH_BYTES
+        scored = scores(stored, query.sketches[first : first + digest.SKETCH_BYTES], cardinality)
         in_file[row] = numpy.maximum.reduceat(scored, starts)
         closest[row] = scored.argmax()
         numpy.maximum(in_query, scored, out=in_query)
