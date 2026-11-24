@@ -9,6 +9,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bin"
 PE64 = FIXTURES / "fixture-pe-x64.exe"
 PE32 = FIXTURES / "fixture-pe-x86.exe"
 ELF64 = FIXTURES / "fixture-elf-x64"
+ELF32 = FIXTURES / "fixture-elf-x86"
 
 MACHO = struct.pack("<I", 0xFEEDFACF) + bytes(4096)
 JUNK = b"plain text, forever" * 20

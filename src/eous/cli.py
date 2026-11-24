@@ -12,13 +12,15 @@ import os
 import re
 import sys
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from eous import cluster, digest, toolchain
+import numpy
+
+from eous import cluster, digest, functions, toolchain
 
 if TYPE_CHECKING:
     from eous import report
@@ -29,6 +31,10 @@ USAGE = 2
 INTERNAL = 3
 
 SHA256_PATTERN = re.compile("[0-9a-f]{64}")
+
+SORTS = ("address", "size", "score", "files", "labels")
+
+ADDRESS_SPACE = 1 << 64
 
 # Windows reports a write to a closed pipe as EINVAL where POSIX raises EPIPE.
 CLOSED_PIPE = (errno.EPIPE, errno.EINVAL) if sys.platform == "win32" else (errno.EPIPE,)
@@ -69,6 +75,8 @@ examples:
   eous match suspect.exe digests.jsonl --min 80 --labels families.tsv
   eous cross digests.jsonl --min 40
   eous cluster digests.jsonl --min 90
+  eous hash --json --functions samples/ > functions.jsonl
+  eous functions suspect.exe functions.jsonl --labels families.tsv --sort files
 
 reading a comparison:
   similarity:  36.5% +/- 4.2
@@ -112,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
     hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE-OR-DIR")
     hash_command.add_argument(
         "--quiet", action="store_true", help="suppress the refusal lines on stderr"
+    )
+    hash_command.add_argument(
+        "--functions",
+        action="store_true",
+        help="with --json, add a digest for each function of 256 bytes or more",
     )
 
     compare_command = commands.add_parser(
@@ -168,7 +181,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="join two digests scoring at least this percentage",
     )
 
-    for command in (match_command, cluster_command):
+    functions_command = commands.add_parser(
+        "functions",
+        help="match the functions of a file against the functions of stored files",
+        description="Find the functions of one file and look each of them up in a file that "
+        "`eous hash --json --functions` wrote. The stored files come first, best first, "
+        "each with its function score beside its whole-file score. The function score is "
+        "the share of the function bytes of both files that match, each match weighted by "
+        "its score and counting from a score of 50. One line per function of the query "
+        "follows: its address, its size, its best score, how many stored files hold a "
+        "match, and the file and address of the best match. With --labels each line counts "
+        "the labels of those files. With --names it ends with the name of the closest "
+        "named match, and with where that match is when it is not the best match. A "
+        "function starts at the target of a direct call, at the entry point, at an export, "
+        "at a TLS callback or an ELF constructor, and at the destination of a direct jump "
+        "from any of these. A function reached only through a pointer is missed, and one "
+        "that follows it is then read as part of the function before. Only functions of "
+        "256 bytes or more get a digest. Addresses are virtual addresses at the preferred "
+        "image base.",
+    )
+    functions_command.add_argument("query", nargs="?", type=Path, metavar="FILE")
+    functions_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
+    functions_command.add_argument(
+        "--top", type=_count, default=10, help="how many stored files to print, default 10"
+    )
+    functions_command.add_argument(
+        "--sort",
+        choices=SORTS,
+        default="address",
+        help="order the function lines: by address, or largest first by size, score, "
+        "matching files or distinct labels; default address",
+    )
+    functions_command.add_argument(
+        "--names",
+        type=Path,
+        metavar="NAMES-FILE",
+        help="a file of sha256, a tab, a hexadecimal address, a tab, then a function name",
+    )
+
+    for command in (match_command, cluster_command, functions_command):
         command.add_argument(
             "--labels",
             type=Path,
@@ -184,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
             metavar="PERCENT",
             help="omit results scoring below this percentage",
         )
-    for command in (hash_command, compare_command, match_command, cross_command, cluster_command):
+    for command in commands.choices.values():
         command.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
@@ -251,6 +302,8 @@ def _dispatch(args: argparse.Namespace) -> int | None:
         return _run_cross(args)
     if args.command == "cluster" and args.known:
         return _run_cluster(args)
+    if args.command == "functions" and args.query and args.known:
+        return _run_functions(args)
     return None
 
 
@@ -273,6 +326,10 @@ def _quieten_stdout() -> None:
 def _run_hash(args: argparse.Namespace) -> int:
     from eous import report
 
+    if args.functions and not args.json:
+        _warn("--functions needs --json")
+        return USAGE
+
     paths, failures = _expand(args.paths)
     unwalked = [
         report.Analysis(
@@ -293,7 +350,8 @@ def _run_hash(args: argparse.Namespace) -> int:
     failed = False
 
     try:
-        for result in itertools.chain(unwalked, _analyse(paths) if paths else ()):
+        analysed = _analyse(paths, args.functions) if paths else ()
+        for result in itertools.chain(unwalked, analysed):
             refused = refused or result.refusal is not None
             failed = failed or _failed(result)
             if args.json:
@@ -326,7 +384,7 @@ def _as_digest(text: str) -> tuple[str | None, int]:
     if not os.path.isfile(text) and not _looks_like_a_path(text):
         return (text, OK)
 
-    [result] = _analyse([Path(text)])
+    [result] = _analyse([Path(text)], with_functions=False)
     if result.refusal is not None:
         _warn(_refusal_line(result.path, result.refusal))
         return (None, INTERNAL if _failed(result) else REFUSED)
@@ -373,9 +431,10 @@ class _Entry:
     path: str
     eous: str
     sketch: digest.Sketch
+    functions: object
 
 
-def _read_digests(path: Path) -> tuple[list[_Entry], int] | None:
+def _read_digests(path: Path, functions: bool = False) -> tuple[list[_Entry], int] | None:
     entries: list[_Entry] = []
     seen: set[str] = set()
     unparsed = 0
@@ -396,7 +455,7 @@ def _read_digests(path: Path) -> tuple[list[_Entry], int] | None:
                     continue
                 if record.get("reason") is not None:
                     continue
-                entry = _as_entry(record)
+                entry = _as_entry(record, functions)
                 if entry is None:
                     unparsed += 1
                 elif entry.sha256 in seen:
@@ -420,7 +479,7 @@ def _read_digests(path: Path) -> tuple[list[_Entry], int] | None:
     return entries, unparsed
 
 
-def _as_entry(record: dict[str, object]) -> _Entry | None:
+def _as_entry(record: dict[str, object], functions: bool) -> _Entry | None:
     sha256 = record.get("sha256")
     path = record.get("path")
     written = record.get("eous")
@@ -432,7 +491,8 @@ def _as_entry(record: dict[str, object]) -> _Entry | None:
     if not SHA256_PATTERN.fullmatch(sha256):
         return None
     try:
-        return _Entry(sha256, path, written, digest.parse(text))
+        held = record.get("functions") if functions else None
+        return _Entry(sha256, path, written, digest.parse(text), held)
     except digest.DigestError:
         return None
 
@@ -493,12 +553,16 @@ def _label_counts(held: list[_Entry], labels: dict[str, str] | None) -> dict[str
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-def _summary(held: list[_Entry], counts: dict[str, int]) -> str:
+def _counted(held: list[_Entry], counts: dict[str, int]) -> str:
     parts = [f"{_readable(label)} {count}" for label, count in counts.items()]
     bare = len(held) - sum(counts.values())
     if bare:
         parts.append(f"- {bare}")
-    return f"{_plural(len(held), 'digest')}: {', '.join(parts)}"
+    return ", ".join(parts)
+
+
+def _summary(held: list[_Entry], counts: dict[str, int]) -> str:
+    return f"{_plural(len(held), 'digest')}: {_counted(held, counts)}"
 
 
 def _run_match(args: argparse.Namespace) -> int:
@@ -733,6 +797,281 @@ def _run_cluster(args: argparse.Namespace) -> int:
     return OK
 
 
+@dataclass(frozen=True)
+class _Function:
+    address: int
+    length: int
+    sketch: digest.Sketch
+
+
+@dataclass(frozen=True)
+class _Row:
+    function: _Function
+    score: float
+    holding: list[_Entry]
+    closest: _Entry
+    closest_address: int
+    name: str | None
+    named: _Entry
+    named_address: int
+
+
+def _as_functions(raw: object, target: str) -> tuple[list[_Function], int]:
+    found: list[_Function] = []
+    unparsed = 0
+    for item in raw if isinstance(raw, list) else []:
+        try:
+            address, length, text = item
+            sketch = digest.parse(text)
+        except (TypeError, ValueError, AttributeError, digest.DigestError):
+            unparsed += 1
+            continue
+        whole = type(address) is int and type(length) is int
+        bounded = whole and 0 <= address < ADDRESS_SPACE and 0 < length < ADDRESS_SPACE
+        if bounded and sketch.target == target:
+            found.append(_Function(address, length, sketch))
+        else:
+            unparsed += 1
+    return found, unparsed
+
+
+def _read_names(path: Path) -> dict[tuple[str, int], str] | None:
+    names: dict[tuple[str, int], str] = {}
+    unparsed = 0
+
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                sha256, _, rest = line.partition("\t")
+                place, _, name = rest.partition("\t")
+                sha256, name = sha256.strip().lower(), name.strip()
+                try:
+                    key = (sha256, int(place, 16))
+                except ValueError:
+                    unparsed += 1
+                    continue
+                if not SHA256_PATTERN.fullmatch(sha256) or key[1] < 0 or not name:
+                    unparsed += 1
+                elif names.get(key, name) != name:
+                    _warn(f"{_readable(str(path))}: {sha256} {key[1]:#x} carries two names")
+                    return None
+                else:
+                    names[key] = name
+    except OSError as exc:
+        _warn(f"{_readable(str(path))}: {exc.strerror}")
+        return None
+
+    if unparsed:
+        _warn(f"{_plural(unparsed, 'name line')} did not parse")
+    return names
+
+
+def _table(found: list[_Function]) -> functions.Table:
+    return functions.table([(function.length, function.sketch) for function in found])
+
+
+def _run_functions(args: argparse.Namespace) -> int:
+    [result] = _analyse([args.query], with_functions=True)
+    if result.refusal is not None:
+        _warn(_refusal_line(result.path, result.refusal))
+        return INTERNAL if _failed(result) else REFUSED
+    if result.digest is None or result.functions is None:
+        raise RuntimeError("a digested file came back without its functions")
+    query = digest.parse(result.digest)
+    asked = [_Function(f.address, f.length, digest.parse(f.digest)) for f in result.functions]
+    if not asked:
+        size = functions.FUNCTION_BYTES
+        _warn(f"{_readable(str(args.query))}: no function of {size} bytes or more")
+        return REFUSED
+
+    read = _read_digests(args.known, functions=True)
+    if read is None:
+        return USAGE
+    entries, unparsed = read
+    if entries and entries[0].eous != _installed_version():
+        _warn(
+            f"{_readable(str(args.known))}: written by eous {_readable(entries[0].eous)}, "
+            f"this is eous {_installed_version()}"
+        )
+        return USAGE
+
+    kept: list[_Entry] = []
+    held: list[_Function] = []
+    owners: list[int] = []
+    starts: list[int] = []
+    other_target = 0
+    bare = 0
+    broken = 0
+    for entry in entries:
+        if entry.sha256 == result.sha256:
+            continue
+        if entry.sketch.target != query.target:
+            other_target += 1
+            continue
+        found, failed = _as_functions(entry.functions, query.target)
+        broken += failed
+        if not found:
+            bare += 1
+            continue
+        starts.append(len(held))
+        owners += [len(kept)] * len(found)
+        held += found
+        kept.append(entry)
+
+    if broken:
+        _warn(f"{_plural(broken, 'stored function')} did not parse")
+    if not kept:
+        _warn(f"{_readable(str(args.known))}: contains no {query.target} file with functions")
+        return USAGE
+
+    labels = None
+    if args.labels is not None:
+        labels = _labels_for(args.labels, kept)
+        if labels is None:
+            return USAGE
+    if args.sort == "labels" and labels is None:
+        _warn("--sort labels needs --labels")
+        return USAGE
+    names: dict[tuple[str, int], str] = {}
+    if args.names is not None:
+        read_names = _read_names(args.names)
+        if read_names is None:
+            return USAGE
+        names = read_names
+
+    with_names = [
+        place
+        for place, (function, owner) in enumerate(zip(held, owners, strict=True))
+        if (kept[owner].sha256, function.address) in names
+    ]
+    matched = functions.match(
+        _table(asked),
+        _table(held),
+        numpy.array(starts, dtype=numpy.intp),
+        numpy.array(with_names, dtype=numpy.intp),
+    )
+
+    sketches = [entry.sketch for entry in kept]
+    whole, spread = digest.score(
+        digest.unpack_all(sketches),
+        digest.cardinalities(sketches),
+        digest.unpack(query),
+        query.cardinality,
+    )
+    ranked = sorted(range(len(kept)), key=lambda place: -matched.files[place])[: args.top]
+    files = [
+        {
+            **_as_member(kept[place], labels),
+            "function_score": round(float(matched.files[place]), 4),
+            **_rounded(whole[place], spread[place]),
+        }
+        for place in ranked
+    ]
+
+    rows: list[_Row] = []
+    for place, function in enumerate(asked):
+        best = int(matched.closest[place])
+        named = int(matched.named[place])
+        source = named if named >= 0 else best
+        rows.append(
+            _Row(
+                function,
+                float(matched.in_file[place].max()),
+                [
+                    kept[file]
+                    for file in numpy.flatnonzero(matched.in_file[place] >= functions.MATCH)
+                ],
+                kept[owners[best]],
+                held[best].address,
+                names[kept[owners[source]].sha256, held[source].address] if named >= 0 else None,
+                kept[owners[source]],
+                held[source].address,
+            )
+        )
+
+    keys: dict[str, Callable[[_Row], float]] = {
+        "address": lambda row: 0.0,
+        "size": lambda row: row.function.length,
+        "score": lambda row: row.score,
+        "files": lambda row: len(row.holding),
+        "labels": lambda row: len(_label_counts(row.holding, labels) or {}),
+    }
+    rows.sort(key=lambda row: (-keys[args.sort](row), row.function.address))
+    hit = sum(1 for row in rows if row.holding)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "meta": _meta(),
+                    "query": str(args.query),
+                    "sha256": result.sha256,
+                    "target": query.target,
+                    "skipped_other_target": other_target,
+                    "skipped_without_functions": bare,
+                    "unparsed": unparsed + broken,
+                    "files": files,
+                    "functions": [_as_function(row, labels) for row in rows],
+                },
+                indent=1,
+            )
+        )
+    else:
+        for place, file in zip(ranked, files, strict=True):
+            scored = _scored(whole[place], spread[place])
+            print(
+                f"functions {file['function_score']:5.1f}%  file {scored}  "
+                f"{_described(kept[place], labels)}"
+            )
+        print()
+        for row in rows:
+            print(_function_line(row, labels))
+
+    _warn(f"{_plural(len(asked), 'function')}, {hit} matched in {_plural(len(kept), 'file')}")
+    if other_target:
+        _warn(f"{_plural(other_target, 'file')} skipped, built for another target")
+    if bare:
+        _warn(f"{_plural(bare, 'file')} skipped, stored without functions")
+    return OK
+
+
+def _as_function(row: _Row, labels: dict[str, str] | None) -> dict[str, object]:
+    matched = bool(row.holding)
+    return {
+        "address": row.function.address,
+        "length": row.function.length,
+        "score": round(row.score, 4) if matched else None,
+        "files": len(row.holding),
+        "labels": _label_counts(row.holding, labels),
+        "match": {**_as_member(row.closest, labels), "address": row.closest_address}
+        if matched
+        else None,
+        "name": {**_as_member(row.named, labels), "address": row.named_address, "name": row.name}
+        if row.name is not None
+        else None,
+    }
+
+
+def _function_line(row: _Row, labels: dict[str, str] | None) -> str:
+    fields = [f"{row.function.address:#x}", f"{row.function.length} bytes"]
+    if not row.holding:
+        return "  ".join([*fields, "no match"])
+    fields += [f"{row.score:5.1f}%", _plural(len(row.holding), "file")]
+    counts = _label_counts(row.holding, labels)
+    if counts is not None:
+        fields.append(_counted(row.holding, counts))
+    closest = f"{row.closest.sha256}:{row.closest_address:#x}"
+    fields.append(closest)
+    if row.name is not None:
+        named = f"{row.named.sha256}:{row.named_address:#x}"
+        fields.append(
+            _readable(row.name) if named == closest else f"{_readable(row.name)} at {named}"
+        )
+    return "  ".join(fields)
+
+
 def _scored(score: float, margin: float) -> str:
     return f"{float(score):5.1f}% +/- {float(margin):3.1f}"
 
@@ -768,10 +1107,10 @@ def _as_scores(scores: digest.Scores, labels: list[str | None]) -> dict[str, obj
     }
 
 
-def _analyse(paths: list[Path]) -> Iterator[report.Analysis]:
+def _analyse(paths: list[Path], with_functions: bool) -> Iterator[report.Analysis]:
     from eous import pool, report
 
-    return pool.analyse(paths, report.analyse)
+    return pool.analyse(paths, report.analyse_functions if with_functions else report.analyse)
 
 
 def _expand(paths: list[Path]) -> tuple[list[Path], list[OSError]]:
@@ -823,7 +1162,7 @@ def _print_line(result: report.Analysis, labelled: bool, quiet: bool) -> None:
 
 
 def _as_record(result: report.Analysis) -> dict[str, object]:
-    return {
+    record: dict[str, object] = {
         "sha256": result.sha256,
         "digest": result.digest,
         "path": str(result.path),
@@ -831,6 +1170,9 @@ def _as_record(result: report.Analysis) -> dict[str, object]:
         "detail": result.refusal.detail if result.refusal else None,
         "eous": _installed_version(),
     }
+    if result.functions is not None:
+        record["functions"] = [[f.address, f.length, f.digest] for f in result.functions]
+    return record
 
 
 def _meta() -> dict[str, str]:

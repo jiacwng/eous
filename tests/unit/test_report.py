@@ -66,7 +66,7 @@ def test_a_compressed_binary_refuses_as_packed(tmp_path: Path) -> None:
 
 
 def pose(monkeypatch: pytest.MonkeyPatch, binary: loader.Binary) -> None:
-    monkeypatch.setattr(report.loader, "load", lambda _: binary)
+    monkeypatch.setattr(report.loader, "load", lambda _, entry_points=False: binary)
 
 
 def with_writable_code(source: loader.Binary) -> loader.Binary:
@@ -191,7 +191,7 @@ def test_an_empty_section_is_not_packed(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_running_out_of_memory_refuses_that_file_alone(monkeypatch: pytest.MonkeyPatch) -> None:
-    def exhausted(path: Path) -> loader.Binary:
+    def exhausted(path: Path, entry_points: bool) -> loader.Binary:
         raise MemoryError
 
     monkeypatch.setattr(report.loader, "load", exhausted)

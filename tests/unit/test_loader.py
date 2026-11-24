@@ -74,7 +74,7 @@ def test_a_pe_whose_sections_claim_the_file_many_times_is_refused_before_lief(
     target = tmp_path / "claims.exe"
     target.write_bytes(pe_with_every_section_claiming_the_file())
 
-    def parse(raw: bytes) -> None:
+    def parse(raw: bytes, entry_points: bool) -> None:
         raise AssertionError("LIEF was reached")
 
     monkeypatch.setattr(loader, "_parse", parse)
@@ -93,7 +93,7 @@ def test_a_truncated_pe_header_is_left_to_lief() -> None:
 def test_lief_skips_the_pe_tables_eous_never_reads() -> None:
     raw = PE64.read_bytes()
     assert len(lief.PE.parse(raw).imports) > 0
-    parsed = loader._parse(raw)
+    parsed = loader._parse(raw, entry_points=False)
     assert isinstance(parsed, lief.PE.Binary)
     assert len(parsed.imports) == 0
     assert not parsed.has_resources
@@ -102,7 +102,7 @@ def test_lief_skips_the_pe_tables_eous_never_reads() -> None:
 def test_lief_skips_the_elf_symbols_eous_never_reads() -> None:
     raw = ELF64.read_bytes()
     assert len(lief.ELF.parse(raw).symbols) > 0
-    parsed = loader._parse(raw)
+    parsed = loader._parse(raw, entry_points=False)
     assert isinstance(parsed, lief.ELF.Binary)
     assert len(parsed.symbols) == 0
 
@@ -182,7 +182,7 @@ def test_a_stripped_elf_still_presents_its_code(tmp_path: Path) -> None:
 def test_a_parser_failure_becomes_a_loader_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def explode(_: bytes) -> object:
+    def explode(_: bytes, entry_points: bool) -> object:
         raise RuntimeError("parser gave up")
 
     target = tmp_path / "anything.bin"
@@ -294,7 +294,7 @@ def test_an_empty_cor20_header_is_not_managed() -> None:
 def test_an_accessor_that_throws_after_parsing_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def broken(parsed: lief.PE.Binary, size: int, sha256: str) -> loader.Binary:
+    def broken(parsed: lief.PE.Binary, size: int, sha256: str, entry_points: bool) -> loader.Binary:
         raise RuntimeError("bad section table")
 
     monkeypatch.setattr(loader, "_load_pe", broken)

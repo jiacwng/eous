@@ -1,4 +1,4 @@
-# The eous command line end to end: the five commands, their output, exit codes and refusals.
+# The eous command line end to end: its commands, their output, exit codes and refusals.
 
 import errno
 import hashlib
@@ -456,7 +456,7 @@ def test_a_file_name_cannot_forge_a_digest_line(
         ),
     ]
     monkeypatch.setattr(cli, "_expand", lambda paths: ([hostile, Path(PE64)], []))
-    monkeypatch.setattr(cli, "_analyse", lambda paths: iter(digested))
+    monkeypatch.setattr(cli, "_analyse", lambda paths, functions: iter(digested))
     assert cli.main(["hash", str(PE64), str(PE64)]) == cli.OK
 
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
@@ -929,7 +929,7 @@ def test_the_cli_imports_no_parser_until_a_binary_is_read() -> None:
 def test_an_internal_error_finishes_the_batch_and_exits_3(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def analysed(paths: list[Path]) -> list[report.Analysis]:
+    def analysed(paths: list[Path], functions: bool) -> list[report.Analysis]:
         return [report.failed(paths[0], RuntimeError("boom")), report.analyse(paths[1])]
 
     monkeypatch.setattr(cli, "_analyse", analysed)
