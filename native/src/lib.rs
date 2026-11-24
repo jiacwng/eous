@@ -1,10 +1,11 @@
 // Turns executable code bytes into an EO1 digest: instruction, root, shingle, sketch.
+// The same pipeline digests each function of a file, once it has found where they start.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use blake2b_simd::Params;
-use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
+use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind};
 
 const ROOTS_JSON: &str = include_str!("../roots.json");
 const OOV: &str = "<oov>";
@@ -24,6 +25,7 @@ const ROOT_BITS: u32 = 7;
 const ROOT_MASK: u64 = (1 << ROOT_BITS) - 1;
 const SHINGLE_MASK: u64 = (1 << (ROOT_BITS * NGRAM as u32)) - 1;
 const COMPACT_FLOOR: usize = 1 << 22;
+const FUNCTION_BYTES: u64 = 256;
 
 struct Vocabulary {
     names: Vec<String>,
@@ -131,7 +133,7 @@ impl Shingles {
     }
 }
 
-fn disassemble(data: &[u8], bitness: u32, ids: &[u8], shingles: &mut Shingles) {
+fn disassemble(data: &[u8], bitness: u32, ids: &[u8], shingles: &mut Shingles, cut: bool) {
     let mut decoder = Decoder::new(bitness, data, DecoderOptions::NONE);
     let mut instruction = Instruction::default();
     let mut previous = None;
@@ -161,10 +163,12 @@ fn disassemble(data: &[u8], bitness: u32, ids: &[u8], shingles: &mut Shingles) {
             shingles.push(ids[mnemonic as usize]);
         }
 
-        if !matches!(
-            instruction.flow_control(),
-            FlowControl::Next | FlowControl::Interrupt
-        ) {
+        if cut
+            && !matches!(
+                instruction.flow_control(),
+                FlowControl::Next | FlowControl::Interrupt
+            )
+        {
             shingles.end_run();
             previous = None;
         }
@@ -218,33 +222,224 @@ fn sketch(keys: &[u64], names: &[String]) -> String {
         .collect()
 }
 
-fn digest_of<S: AsRef<[u8]>>(
-    sections: &[S],
-    bitness: u32,
-    target: &str,
-) -> Result<Option<String>, String> {
+fn check(bitness: u32, target: &str) -> Result<(), String> {
     if !BITNESSES.contains(&bitness) {
         return Err(format!("unsupported bitness {bitness}"));
     }
     if !TARGETS.contains(&target) {
         return Err(format!("unsupported target {target:?}"));
     }
-    let vocabulary = vocabulary();
-    let mut shingles = Shingles::new();
-    for section in sections {
-        disassemble(section.as_ref(), bitness, &vocabulary.ids, &mut shingles);
-    }
-    let keys = shingles.finish();
+    Ok(())
+}
 
+fn render(keys: &[u64], target: &str, names: &[String]) -> Option<String> {
     let mut seen = [false; 1 << ROOT_BITS];
     keys.iter()
         .flat_map(|&key| root_ids(key))
         .for_each(|id| seen[id] = true);
     if seen.iter().filter(|&&found| found).count() < 2 {
-        return Ok(None);
+        return None;
     }
-    let body = sketch(&keys, &vocabulary.names);
-    Ok(Some(format!("{VERSION}:{target}:{}:{body}", keys.len())))
+    let body = sketch(keys, names);
+    Some(format!("{VERSION}:{target}:{}:{body}", keys.len()))
+}
+
+fn digest_of<S: AsRef<[u8]>>(
+    sections: &[S],
+    bitness: u32,
+    target: &str,
+) -> Result<Option<String>, String> {
+    check(bitness, target)?;
+    let vocabulary = vocabulary();
+    let mut shingles = Shingles::new();
+    for section in sections {
+        disassemble(
+            section.as_ref(),
+            bitness,
+            &vocabulary.ids,
+            &mut shingles,
+            true,
+        );
+    }
+    Ok(render(&shingles.finish(), target, &vocabulary.names))
+}
+
+fn is_near(instruction: &Instruction) -> bool {
+    matches!(
+        instruction.op0_kind(),
+        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+    )
+}
+
+fn marked(bits: &[u64], place: usize) -> bool {
+    (bits[place / 64] >> (place % 64)) & 1 == 1
+}
+
+fn mark(bits: &mut [u64], place: usize) {
+    bits[place / 64] |= 1 << (place % 64);
+}
+
+// One bit per byte of a section, so the finder holds a fixed share of the code it reads.
+struct Code<'a> {
+    address: u64,
+    data: &'a [u8],
+    instructions: Vec<u64>,
+    ends: Vec<u64>,
+    starts: Vec<u64>,
+}
+
+fn locate(codes: &[Code], address: u64) -> Option<(usize, usize)> {
+    let index = codes
+        .partition_point(|code| code.address <= address)
+        .checked_sub(1)?;
+    let place = usize::try_from(address - codes[index].address).ok()?;
+    (place < codes[index].data.len()).then_some((index, place))
+}
+
+fn propose(codes: &mut [Code], address: u64) {
+    if let Some((index, place)) = locate(codes, address) {
+        mark(&mut codes[index].starts, place);
+    }
+}
+
+fn sweep(codes: &mut [Code], index: usize, bitness: u32) {
+    let (address, data) = (codes[index].address, codes[index].data);
+    let mut decoder = Decoder::with_ip(bitness, data, address, DecoderOptions::NONE);
+    let mut instruction = Instruction::default();
+    while decoder.can_decode() {
+        let position = decoder.position();
+        decoder.decode_out(&mut instruction);
+        if instruction.is_invalid() {
+            decoder
+                .set_position(position + 1)
+                .expect("the next byte is inside the section");
+            decoder.set_ip(address.wrapping_add(position as u64 + 1));
+            continue;
+        }
+        mark(&mut codes[index].instructions, position);
+        match instruction.flow_control() {
+            FlowControl::Call
+                if is_near(&instruction)
+                    && instruction.near_branch_target() != instruction.next_ip() =>
+            {
+                propose(codes, instruction.near_branch_target());
+            }
+            FlowControl::UnconditionalBranch
+            | FlowControl::Return
+            | FlowControl::IndirectBranch => {
+                mark(&mut codes[index].ends, decoder.position());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn jump_target(code: &Code, place: usize, bitness: u32) -> Option<u64> {
+    let ip = code.address.wrapping_add(place as u64);
+    let mut decoder = Decoder::with_ip(bitness, &code.data[place..], ip, DecoderOptions::NONE);
+    let instruction = decoder.decode();
+    (instruction.flow_control() == FlowControl::UnconditionalBranch && is_near(&instruction))
+        .then(|| instruction.near_branch_target())
+}
+
+// A function starts at the target of a direct call or at an entry point, each followed
+// through direct jumps and kept when it falls on an instruction of the linear sweep. It ends
+// after its last return or unconditional jump before the next start.
+fn bounds<'a, S: AsRef<[u8]>>(
+    sections: &'a [(u64, S)],
+    bitness: u32,
+    entry_points: &[u64],
+) -> Vec<Code<'a>> {
+    let mut codes: Vec<Code> = sections
+        .iter()
+        .map(|(address, data)| {
+            let data = data.as_ref();
+            let words = data.len() / 64 + 1;
+            Code {
+                address: *address,
+                data,
+                instructions: vec![0; words],
+                ends: vec![0; words],
+                starts: vec![0; words],
+            }
+        })
+        .collect();
+    codes.sort_by_key(|code| code.address);
+
+    for index in 0..codes.len() {
+        sweep(&mut codes, index, bitness);
+    }
+    for &address in entry_points {
+        propose(&mut codes, address);
+    }
+
+    let mut reached = Vec::new();
+    for (index, code) in codes.iter_mut().enumerate() {
+        for (word, (starts, instructions)) in
+            code.starts.iter_mut().zip(&code.instructions).enumerate()
+        {
+            *starts &= instructions;
+            reached.extend(
+                (0..64)
+                    .filter(|bit| (*starts >> bit) & 1 == 1)
+                    .map(|bit| (index, word * 64 + bit)),
+            );
+        }
+    }
+    while let Some((index, place)) = reached.pop() {
+        let followed = jump_target(&codes[index], place, bitness)
+            .and_then(|target| locate(&codes, target))
+            .filter(|&(index, place)| {
+                marked(&codes[index].instructions, place) && !marked(&codes[index].starts, place)
+            });
+        if let Some((index, place)) = followed {
+            mark(&mut codes[index].starts, place);
+            reached.push((index, place));
+        }
+    }
+    codes
+}
+
+// A shingle may cross a branch inside a function, since the function already bounds it.
+fn functions_of<S: AsRef<[u8]>>(
+    sections: &[(u64, S)],
+    bitness: u32,
+    target: &str,
+    entry_points: &[u64],
+) -> Result<Vec<(u64, u64, String)>, String> {
+    check(bitness, target)?;
+    let vocabulary = vocabulary();
+    let mut found = Vec::new();
+    for code in bounds(sections, bitness, entry_points) {
+        let mut limit = code.data.len();
+        for start in (0..code.data.len()).rev() {
+            if !marked(&code.starts, start) {
+                continue;
+            }
+            let end = (start + 1..=limit)
+                .rev()
+                .find(|&place| marked(&code.ends, place))
+                .unwrap_or(limit);
+            limit = start;
+            if ((end - start) as u64) < FUNCTION_BYTES {
+                continue;
+            }
+            let mut shingles = Shingles::new();
+            disassemble(
+                &code.data[start..end],
+                bitness,
+                &vocabulary.ids,
+                &mut shingles,
+                false,
+            );
+            if let Some(text) = render(&shingles.finish(), target, &vocabulary.names) {
+                let address = code.address.wrapping_add(start as u64);
+                found.push((address, (end - start) as u64, text));
+            }
+        }
+    }
+    found.sort_unstable_by_key(|&(address, _, _)| address);
+    Ok(found)
 }
 
 #[cfg(feature = "python")]
@@ -266,9 +461,23 @@ mod python {
             .map_err(PyValueError::new_err)
     }
 
+    #[pyfunction]
+    fn functions(
+        py: Python<'_>,
+        sections: Vec<(u64, PyBackedBytes)>,
+        bitness: u32,
+        target: &str,
+        entry_points: Vec<u64>,
+    ) -> PyResult<Vec<(u64, u64, String)>> {
+        py.detach(|| super::functions_of(&sections, bitness, target, &entry_points))
+            .map_err(PyValueError::new_err)
+    }
+
     #[pymodule]
     fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module.add_function(wrap_pyfunction!(digest, module)?)?;
+        module.add_function(wrap_pyfunction!(functions, module)?)?;
+        module.add("FUNCTION_BYTES", super::FUNCTION_BYTES)?;
         module.add("ICED_X86", ICED_X86)?;
         module.add("VERSION", super::VERSION)?;
         module.add("TARGETS", super::TARGETS)?;
@@ -407,6 +616,106 @@ mod tests {
         assert_eq!(fields[..3], ["EO1", "pe64", "1"]);
         assert_eq!(fields[3].len(), PERMUTATIONS * SLOT_BITS as usize / 4);
         assert!(fields[3].bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    const BASE: u64 = 0x1000;
+    const CALL_PAST_THE_RETURN: &[u8] = b"\xe8\x01\x00\x00\x00";
+    const CALL_THE_NEXT_INSTRUCTION: &[u8] = b"\xe8\x00\x00\x00\x00";
+    const JUMP_TO_THE_NEXT_INSTRUCTION: &[u8] = b"\xe9\x00\x00\x00\x00";
+    const JE: &[u8] = b"\x74\x00";
+
+    fn body() -> Vec<u8> {
+        code(&[&XOR_PUSH.repeat(100), RET])
+    }
+
+    fn found(section: Vec<u8>, entry_points: &[u64]) -> Vec<(u64, u64, String)> {
+        functions_of(&[(BASE, section)], 64, "pe64", entry_points)
+            .expect("a supported bitness and target")
+    }
+
+    fn places(functions: &[(u64, u64, String)]) -> Vec<(u64, u64)> {
+        functions
+            .iter()
+            .map(|&(start, length, _)| (start, length))
+            .collect()
+    }
+
+    #[test]
+    fn a_called_address_starts_a_function_that_ends_at_its_last_return() {
+        let section = code(&[CALL_PAST_THE_RETURN, RET, &body(), &NOP.repeat(8)]);
+        assert_eq!(places(&found(section, &[])), [(BASE + 6, 301)]);
+    }
+
+    #[test]
+    fn an_entry_point_that_jumps_also_starts_its_destination() {
+        let section = code(&[JUMP_TO_THE_NEXT_INSTRUCTION, &body()]);
+        assert_eq!(places(&found(section, &[BASE])), [(BASE + 5, 301)]);
+    }
+
+    #[test]
+    fn a_call_to_the_next_instruction_starts_nothing() {
+        let section = code(&[CALL_THE_NEXT_INSTRUCTION, &body()]);
+        assert!(found(section, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_start_off_an_instruction_or_outside_the_code_is_dropped() {
+        assert!(found(body(), &[BASE + 1, BASE - 1, u64::MAX]).is_empty());
+        assert_eq!(places(&found(body(), &[BASE])), [(BASE, 301)]);
+    }
+
+    #[test]
+    fn a_jump_to_itself_ends_the_chain() {
+        let section = code(&[b"\xeb\xfe", &body()]);
+        assert_eq!(places(&found(section, &[BASE])), [(BASE, 303)]);
+    }
+
+    #[test]
+    fn the_next_start_bounds_a_function_that_never_returns() {
+        let open = XOR_PUSH.repeat(100);
+        let section = code(&[&open, &body()]);
+        let both = [BASE, BASE + 300];
+        assert_eq!(
+            places(&found(section, &both)),
+            [(BASE, 300), (BASE + 300, 301)]
+        );
+    }
+
+    #[test]
+    fn a_function_under_256_bytes_gets_no_digest() {
+        let short = code(&[&XOR_PUSH.repeat(84), RET]);
+        assert!(found(short, &[BASE]).is_empty());
+        let long = code(&[&XOR_PUSH.repeat(85), RET]);
+        assert_eq!(places(&found(long, &[BASE])), [(BASE, 256)]);
+    }
+
+    #[test]
+    fn a_branch_inside_a_function_does_not_end_the_run() {
+        let padding = NOP.repeat(300);
+        let cardinality_with = |middle: &[u8]| {
+            let section = code(&[XOR, middle, XOR_PUSH, &padding, RET]);
+            cardinality(&found(section, &[BASE])[0].2)
+        };
+        assert!(cardinality_with(JE) > cardinality_with(b""));
+    }
+
+    #[test]
+    fn hostile_code_ends_in_functions_or_none_without_panicking() {
+        let mut state = 20_261_124_u64;
+        let noise: Vec<u8> = (0..65_536)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                (state >> 56) as u8
+            })
+            .collect();
+        let overlapping = [(u64::MAX - 100, noise.clone()), (u64::MAX - 50, noise)];
+        for bitness in BITNESSES {
+            let entry_points = [0, u64::MAX - 100, u64::MAX];
+            functions_of(&overlapping, bitness, "pe64", &entry_points).unwrap();
+        }
+        assert!(found(Vec::new(), &[BASE]).is_empty());
     }
 
     #[test]
