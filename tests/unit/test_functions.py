@@ -175,7 +175,7 @@ def test_a_copy_under_another_sha256_matches_every_function(
     assert cli.main(["functions", str(PE64), str(known)]) == cli.OK
     captured = capsys.readouterr()
     files, _, rows = captured.out.partition("\n\n")
-    assert files == f"functions 100.0%  file 100.0% +/- 0.5  {sha256_at(0)}  {PE64}"
+    assert files == f"functions 100.0%  file 100.0% +/- 2.0  {sha256_at(0)}  {PE64}"
     lines = rows.splitlines()
     function = first_function(PE64)
     assert lines[0] == (

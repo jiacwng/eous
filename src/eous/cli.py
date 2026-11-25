@@ -80,12 +80,12 @@ examples:
   eous functions suspect.exe functions.jsonl --labels families.tsv --sort files
 
 reading a comparison:
-  similarity:  36.5% +/- 4.2
+  similarity:  36.5% +/- 8.1
   containment: old.exe in new.exe   96.0%
                new.exe in old.exe   37.0%
 
-  The +/- figure is the margin of error, since 256 slots estimate the overlap.
-  Two results whose ranges overlap are not separable.
+  The +/- figure is the 95% margin of error, since 256 slots estimate the overlap.
+  Two results whose ranges overlap should be read as a tie.
 
   Containment runs both ways, and the gap between them says which side is the
   superset. Above a 4x size difference both figures are withheld.

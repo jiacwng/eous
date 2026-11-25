@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from statistics import NormalDist
 
 import numpy
 
@@ -18,6 +19,9 @@ TARGETS = tuple(_native.TARGETS)
 MAX_CONTAINMENT_RATIO = 4.0
 
 MAX_CARDINALITY = 2**53
+
+CONFIDENCE = 0.95
+Z = NormalDist().inv_cdf((1 + CONFIDENCE) / 2)
 
 FLOOR = 2.0**-SLOT_BITS
 MASK = (1 << SLOT_BITS) - 1
@@ -97,10 +101,12 @@ def score(
 
 
 def _wilson_margin(agreed: numpy.ndarray) -> numpy.ndarray:
-    denominator = 1 + 1 / PERMUTATIONS
-    centre = (agreed + 1 / (2 * PERMUTATIONS)) / denominator
+    denominator = 1 + Z**2 / PERMUTATIONS
+    centre = (agreed + Z**2 / (2 * PERMUTATIONS)) / denominator
     half = (
-        numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS + 1 / (4 * PERMUTATIONS**2)) / denominator
+        Z
+        * numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS + Z**2 / (4 * PERMUTATIONS**2))
+        / denominator
     )
     margin: numpy.ndarray = numpy.maximum(agreed - (centre - half), centre + half - agreed)
     return margin

@@ -14,7 +14,9 @@ ELF32 = FIXTURES / "fixture-elf-x86"
 MACHO = struct.pack("<I", 0xFEEDFACF) + bytes(4096)
 JUNK = b"plain text, forever" * 20
 
-WILSON_MARGIN_AT_FULL_AGREEMENT = 100 / (digest.PERMUTATIONS + 1) / (1 - digest.FLOOR)
+WILSON_MARGIN_AT_FULL_AGREEMENT = (
+    100 * digest.Z**2 / (digest.PERMUTATIONS + digest.Z**2) / (1 - digest.FLOOR)
+)
 
 
 def elf_header(machine: int) -> bytes:

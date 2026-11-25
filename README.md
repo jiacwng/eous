@@ -38,7 +38,7 @@ found in the other.
 
 ```
 $ eous compare rg-14.0.0.exe rg-14.1.0.exe
-similarity:  82.3% +/- 3.0
+similarity:  82.3% +/- 6.3
 containment: rg-14.0.0.exe in rg-14.1.0.exe   89.9%
              rg-14.1.0.exe in rg-14.0.0.exe   90.7%
 ```
@@ -49,10 +49,10 @@ list, one line per file with its sha256.
 ```
 $ eous hash --json samples/ > known.jsonl
 $ eous match suspect.exe known.jsonl
- 70.8% +/- 3.6  37b10903cc0f...  samples/rg-14.1.0.exe
- 67.7% +/- 3.7  18ffabc518bb...  samples/rg-14.0.0.exe
- 54.2% +/- 4.0  4125309a857e...  samples/rg-13.0.0.exe
- 44.3% +/- 4.1  afacf221d0d2...  samples/fd-10.2.0.exe
+ 70.8% +/- 7.3  37b10903cc0f...  samples/rg-14.1.0.exe
+ 67.7% +/- 7.5  18ffabc518bb...  samples/rg-14.0.0.exe
+ 54.2% +/- 8.0  4125309a857e...  samples/rg-13.0.0.exe
+ 44.3% +/- 8.2  afacf221d0d2...  samples/fd-10.2.0.exe
 ```
 
 `cross` scores every pair in a list of digests. Pairs print in scan order, so memory stays
@@ -82,10 +82,10 @@ and where the best match is.
 ```
 $ eous hash --json --functions samples/ > functions.jsonl
 $ eous functions suspect.exe functions.jsonl --sort score
-functions  52.8%  file  70.8% +/- 3.6  37b10903cc0f...  samples/rg-14.1.0.exe
-functions  48.0%  file  67.7% +/- 3.7  18ffabc518bb...  samples/rg-14.0.0.exe
-functions  13.6%  file  54.2% +/- 4.0  4125309a857e...  samples/rg-13.0.0.exe
-functions   8.5%  file  44.3% +/- 4.1  afacf221d0d2...  samples/fd-10.2.0.exe
+functions  52.8%  file  70.8% +/- 7.3  37b10903cc0f...  samples/rg-14.1.0.exe
+functions  48.0%  file  67.7% +/- 7.5  18ffabc518bb...  samples/rg-14.0.0.exe
+functions  13.6%  file  54.2% +/- 8.0  4125309a857e...  samples/rg-13.0.0.exe
+functions   8.5%  file  44.3% +/- 8.2  afacf221d0d2...  samples/fd-10.2.0.exe
 
 0x4465e0  277 bytes  100.0%  2 files  37b10903cc0f...:0x45a950
 0x4674c0  276 bytes  100.0%  4 files  18ffabc518bb...:0x47a910
