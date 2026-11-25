@@ -394,7 +394,35 @@ def test_differing_targets_are_a_usage_error(capsys: pytest.CaptureFixture[str])
 
 def test_compare_needs_two_inputs(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["compare", str(PE64)]) == cli.USAGE
+    captured = capsys.readouterr()
+    assert "usage: eous compare" in captured.err
+    assert "the following arguments are required: FILE-OR-DIGEST" in captured.err
     assert cli.main(["compare"]) == cli.USAGE
+
+
+@pytest.mark.parametrize(
+    ("argv", "missing"),
+    [
+        (["hash"], "FILE-OR-DIR"),
+        (["match", "query"], "DIGESTS-FILE"),
+        (["cross"], "DIGESTS-FILE"),
+        (["cluster", "--min", "50"], "DIGESTS-FILE"),
+        (["functions", "query"], "DIGESTS-FILE"),
+    ],
+)
+def test_a_missing_argument_is_named_under_the_usage_of_its_command(
+    argv: list[str], missing: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(argv) == cli.USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"usage: eous {argv[0]}" in captured.err
+    assert f"the following arguments are required: {missing}" in captured.err
+
+
+def test_no_command_is_a_usage_error_that_says_so(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main([]) == cli.USAGE
+    assert "eous: error: a command is required" in capsys.readouterr().err
 
 
 def test_compare_json_carries_both_scores(capsys: pytest.CaptureFixture[str]) -> None:
