@@ -639,9 +639,8 @@ def _run_cross(args: argparse.Namespace) -> int:
         cardinalities = digest.cardinalities([sketches[index] for index in members])
         for offset in range(len(members) - 1):
             left = members[offset]
-            first = offset * digest.SKETCH_BYTES
-            agreed = digest.agreement(rows, rows[first : first + digest.SKETCH_BYTES])
-            agreed = agreed[offset + 1 :]
+            after = (offset + 1) * digest.SKETCH_BYTES
+            agreed = digest.agreement(rows[after:], rows[after - digest.SKETCH_BYTES : after])
             scores = digest.similarity(
                 agreed, cardinalities[offset + 1 :], sketches[left].cardinality
             )

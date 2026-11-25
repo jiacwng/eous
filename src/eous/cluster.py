@@ -17,11 +17,9 @@ def clusters(sketches: Sequence[digest.Sketch], minimum: float) -> list[list[int
     labels = numpy.arange(len(sketches))
 
     for left in range(len(sketches) - 1):
-        first = left * digest.SKETCH_BYTES
-        agreed = digest.agreement(rows, rows[first : first + digest.SKETCH_BYTES])
-        scores = digest.similarity(
-            agreed[left + 1 :], cardinalities[left + 1 :], sketches[left].cardinality
-        )
+        after = (left + 1) * digest.SKETCH_BYTES
+        agreed = digest.agreement(rows[after:], rows[after - digest.SKETCH_BYTES : after])
+        scores = digest.similarity(agreed, cardinalities[left + 1 :], sketches[left].cardinality)
         joined = numpy.unique(labels[left + 1 :][scores >= minimum])
         joined = joined[joined != labels[left]]
         if joined.size:
