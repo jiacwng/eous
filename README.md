@@ -2,9 +2,11 @@
 
 [![ci](https://github.com/jiacwng/eous/actions/workflows/ci.yml/badge.svg)](https://github.com/jiacwng/eous/actions/workflows/ci.yml)
 
-eous is a fuzzy hashing tool for PE and ELF binaries. It reads the mnemonics/opcodes of an x86 or
-x86-64 executable and turns them into a 512-bit hash. Comparing two hashes gives a similarity
-score from 0 to 100%. Builds of the same program score high even when their bytes differ.
+eous is a fuzzy hashing tool for PE and ELF binaries. It is made for malware triage: given a
+new sample, it finds the known samples that share its code. It reads the mnemonics/opcodes of
+an x86 or x86-64 executable and turns them into a 512-bit hash. Comparing two hashes gives a
+similarity score from 0 to 100%. Builds of the same program score high even when their bytes
+differ.
 
 ```
 $ eous hash rg-14.0.0.exe
@@ -115,8 +117,8 @@ instructions mostly stay the same, so the score stays high.
 
 ## How well it works
 
-eous was tested on about 116,000 program files and 2,900 malware samples, beside the tools people
-already use for this:
+eous was tested on 2,900 malware samples and about 116,000 program files, beside the tools
+people already use for this:
 
 - tlsh and ssdeep compare the raw bytes of two files.
 - imports compares the lists of system functions two files call. imphash is a hash of that
@@ -126,24 +128,6 @@ already use for this:
 Each cell gives two numbers. The first is AUC: the chance that a related pair scores higher
 than an unrelated one, where 0.5 is a coin flip and 1.0 is perfect. The second is how often
 the closest match to a file is related to it.
-
-### Ordinary programs
-
-The programs come from Assemblage, a public dataset of GitHub projects built with many
-compilers and settings. Two files count as related when they are the same program. eous was
-tuned on this dataset.
-
-| tool | Windows, 56,145 files | Linux, 59,990 files |
-|---|---|---|
-| imports | 0.977 / 79% | 0.981 / 84% |
-| eous | 0.807 / 48% | 0.898 / 66% |
-| tlsh | 0.794 / 47% | 0.947 / 70% |
-| imphash | 0.597 / 48% | |
-| ssdeep | 0.592 / 32% | 0.650 / 54% |
-| file size | 0.794 / 6% | 0.916 / 18% |
-
-eous does best when the same code is built a different way. Matching a Debug build to the
-Release build of the same Windows program, eous scores 0.726 and tlsh 0.570.
 
 ### Malware
 
@@ -162,16 +146,40 @@ count once.
 On malware, eous, tlsh and imports are close, and none of them clearly wins. imphash works on
 Windows files only. imports finds almost nothing in Linux malware, so it is left out there.
 
+`functions` was built and tried on the MalwareBazaar samples. For 400 of them, the closest
+other file was of the same family 334 times by function score and 331 times by file score.
+
+### Rebuilt programs
+
+The programs come from Assemblage, a public dataset of GitHub projects built with many
+compilers and settings. Two files count as related when they are the same program. eous was
+tuned on this dataset.
+
+| tool | Windows, 56,145 files | Linux, 59,990 files |
+|---|---|---|
+| imports | 0.977 / 79% | 0.981 / 84% |
+| eous | 0.807 / 48% | 0.898 / 66% |
+| tlsh | 0.794 / 47% | 0.947 / 70% |
+| imphash | 0.597 / 48% | |
+| ssdeep | 0.592 / 32% | 0.650 / 54% |
+| file size | 0.794 / 6% | 0.916 / 18% |
+
+eous does best when the same code is built a different way. Matching a Debug build to the
+Release build of the same Windows program, eous scores 0.726 and tlsh 0.570.
+
 ### Speed
 
-eous hashes a file in 14.8 ms on one core. tlsh takes 18.1 ms and ssdeep 21.0 ms.
+eous hashes a file in 18.5 ms on one core. tlsh takes 17.6 ms and ssdeep 23.8 ms. With
+`--functions`, eous takes 103 ms.
 
 ## Limits
 
 - If a file still has its list of imported functions, comparing that list works better than
   any fuzzy hash. eous is for files where that list is missing or useless: static builds,
   stripped binaries and malware.
-- On Linux programs, eous scores below tlsh and below file size.
+- On Linux programs, eous scores below tlsh and below file size, mostly when one of the two
+  builds is unoptimised.
+- eous has not been tested against obfuscated code.
 - eous only reads native code. It refuses .NET bytecode (`managed`), packed files (`packed`),
   files that are not PE or ELF (`unsupported_format`), other processors (`unsupported_arch`)
   and files with no code (`no_code`). Of 2,250 MalwareBazaar samples it refused 577, mostly
@@ -179,8 +187,8 @@ eous hashes a file in 14.8 ms on one core. tlsh takes 18.1 ms and ssdeep 21.0 ms
 - eous spots packed files by how random their code looks. A packer that avoids that gets
   through, and eous then hashes the packer instead of the program.
 - eous cannot match malware samples that share no code, even when they carry the same family
-  name. This is why eous scores lower than tlsh on MOTIF. One family there, IcedID, has 142
-  samples whose code barely overlaps. Without IcedID, eous and tlsh score the same.
+  name. One MOTIF family, IcedID, has 135 samples whose code barely overlaps. Without it,
+  eous scores 0.671 and tlsh 0.697.
 - `functions` finds a function when something calls it directly or when it is an entry
   point. It misses a function reached only through a pointer.
 - Digests only compare within one target: pe32, pe64, elf32 or elf64.
