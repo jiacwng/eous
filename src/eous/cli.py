@@ -62,7 +62,7 @@ lands where unrelated files already sit and carries no information.
 
 exit codes:
   0  every file digested, or the reader closed the output early
-  1  at least one file or directory refused, with the cause on stderr
+  1  at least one file or directory skipped, with the cause on stderr
   2  usage error
   3  internal error
 
@@ -90,7 +90,7 @@ reading a comparison:
   Containment runs both ways, and the gap between them says which side is the
   superset. Above a 4x size difference both figures are withheld.
 
-a refusal names its cause:
+a skipped file names its cause:
   eous: sample.macho:  unsupported_format: macho
   eous: sample.elf:    unsupported_arch: AARCH64
   eous: packed.exe:    packed: 100% of executable code is compressed
@@ -115,12 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
     hash_command = commands.add_parser(
         "hash",
         help="print a digest for each file",
-        description="Print one digest per file, or the cause when a file is refused. "
+        description="Print one digest per file, or the cause when a file is skipped. "
         "A directory is walked, and every file under it is digested.",
     )
     hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE-OR-DIR")
     hash_command.add_argument(
-        "--quiet", action="store_true", help="suppress the refusal lines on stderr"
+        "--quiet", action="store_true", help="suppress the lines for skipped files on stderr"
     )
     hash_command.add_argument(
         "--functions",
@@ -164,13 +164,13 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_command = commands.add_parser(
         "cluster",
         help="group the digests in a file by similarity",
-        description="Give every digest in a file a cluster. Two digests share a cluster when "
-        "a chain of pairs scoring at least --min joins them, so a low --min chains unrelated "
-        "files together. The file is what `eous hash --json` writes. Each line is a cluster "
-        "name, then the sha256 and path of one digest. With --labels the label comes "
-        "first, and a cluster of two or more digests opens with a count of its labels. "
-        "The name is the target and a number, counted in the "
-        "order the clusters first appear, and a digest that joins nothing gets a cluster to "
+        description="Give every digest in a file a cluster by single-linkage clustering. Two "
+        "digests share a cluster when a chain of pairs scoring at least --min joins them, so "
+        "a low --min chains unrelated files together. The file is what `eous hash --json` "
+        "writes. Each line is a cluster name, then the sha256 and path of one digest. With "
+        "--labels the label comes first, and a cluster of two or more digests opens with a "
+        "count of its labels. The name is the target and a number, counted in the order the "
+        "clusters first appear, and a digest that joins nothing gets a cluster to "
         "itself. A cluster stays inside one target, since two digests compare only when "
         "their targets match, and the targets follow in the order they first appear.",
     )
@@ -198,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
         "named match, and with where that match is when it is not the best match. A "
         "function starts at the target of a direct call, at the entry point, at an export, "
         "at a TLS callback or an ELF constructor, and at the destination of a direct jump "
-        "from any of these. A function reached only through a pointer is missed, and one "
+        "from any of these. A function reached only by an indirect call is missed, and one "
         "that follows it is then read as part of the function before. Only functions of "
         "256 bytes or more get a digest. Addresses are virtual addresses at the preferred "
         "image base.",

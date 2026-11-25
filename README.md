@@ -62,8 +62,8 @@ flat on a large list. Pipe through `sort -rn` to read them best first.
 $ eous cross known.jsonl --min 55 | sort -rn
 ```
 
-`cluster` groups a list of digests. Two files share a cluster when a chain of pairs scoring
-at least `--min` joins them.
+`cluster` groups a list of digests by single-linkage clustering. Two files share a cluster
+when a chain of pairs scoring at least `--min` joins them.
 
 ```
 $ eous cluster known.jsonl --min 55
@@ -102,15 +102,15 @@ Use scores to rank files, not as a yes or no. Programs written in the same langu
 library code, so unrelated programs never score near zero. In the example, fd scores 44%
 against ripgrep although it is a different program. Every ripgrep version scores higher.
 
-Exit codes: 0 when every file got a digest, 1 when a file or directory was refused, 2 for a
+Exit codes: 0 when every file got a digest, 1 when a file or directory was skipped, 2 for a
 usage error, 3 for an internal error.
 
 ## How it works
 
 eous disassembles the code of the file. It replaces each instruction with its general kind,
 so `add` and `adc` count as the same thing. It then collects every sequence of three
-instructions in a row and keeps a compact summary of that collection, a MinHash sketch. The
-more sequences two files share, the higher their score.
+instructions in a row, a 3-gram, and keeps a compact summary of that collection, a MinHash
+sketch. The more 3-grams two files share, the higher their score.
 
 Recompiling a program moves its code and changes its addresses. The sequences of
 instructions mostly stay the same, so the score stays high.
@@ -179,16 +179,16 @@ eous hashes a file in 18.5 ms on one core. tlsh takes 17.6 ms and ssdeep 23.8 ms
   stripped binaries and malware.
 - On Linux programs, eous scores below tlsh and below file size.
 - eous has not been tested against obfuscated code.
-- eous only reads native code. It refuses .NET bytecode (`managed`), packed files (`packed`),
+- eous only reads native code. It skips .NET bytecode (`managed`), packed files (`packed`),
   files that are not PE or ELF (`unsupported_format`), other processors (`unsupported_arch`)
-  and files with no code (`no_code`). Of 2,250 MalwareBazaar samples it refused 577, mostly
+  and files with no code (`no_code`). Of 2,250 MalwareBazaar samples it skipped 577, mostly
   .NET and packed files.
 - eous spots packed files by how random their code looks. A packer that avoids that gets
   through, and eous then hashes the packer instead of the program.
 - eous cannot match malware samples that share no code, even when they carry the same family
   name. One MOTIF family, IcedID, has 135 samples whose code barely overlaps.
 - `functions` finds a function when something calls it directly or when it is an entry
-  point. It misses a function reached only through a pointer.
+  point. It misses a function reached only by an indirect call.
 - Digests only compare within one target: pe32, pe64, elf32 or elf64.
 
 ## Digest format
