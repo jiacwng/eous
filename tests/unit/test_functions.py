@@ -320,7 +320,7 @@ def test_a_named_function_gives_its_name_to_the_match(
     names = names_file(
         tmp_path,
         f"{sha256_at(0).upper()}\t{function.address:#x}\trc4_init\n"
-        f"{sha256_at(0)}\t{function.address:x}\trc4_init\n"
+        f"{sha256_at(0)}\t{function.address:x}\trc4_init\n\n"
         f"{sha256_at(0)}\tnot hex\tname\nshort\t10\tname\n{sha256_at(0)}\t10\t\nno tab\n",
     )
     assert cli.main(["functions", str(PE64), str(known), "--names", str(names)]) == cli.OK

@@ -350,6 +350,33 @@ def test_a_mistyped_path_is_refused_as_absent(
     assert f"{Path('no/such/file.exe')}: unreadable: file is absent" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a named pipe")
+def test_a_named_pipe_is_refused_as_not_a_regular_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    os.mkfifo(tmp_path / "pipe")
+    assert cli.main(["hash", str(tmp_path / "pipe")]) == cli.REFUSED
+    assert "unreadable: not a regular file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["match", "a", "b", "--min", "abc"], "'abc' is not a percentage from 0 to 100"),
+        (["match", "a", "b", "--min", "101"], "'101' is not a percentage from 0 to 100"),
+        (["match", "a", "b", "--min", "nan"], "'nan' is not a percentage from 0 to 100"),
+        (["match", "a", "b", "--top", "x"], "'x' is not a count of 0 or more"),
+        (["match", "a", "b", "--top", "-1"], "'-1' is not a count of 0 or more"),
+    ],
+    ids=["min text", "min high", "min nan", "top text", "top negative"],
+)
+def test_a_bad_number_is_a_usage_error_that_names_it(
+    args: list[str], message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(args) == cli.USAGE
+    assert message in capsys.readouterr().err
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="a symlink needs privilege on Windows")
 def test_a_symlink_loop_is_refused_as_absent(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1069,6 +1096,7 @@ def test_match_refuses_a_file_against_digests_of_another_eous_version(
             }
         ),
         json.dumps({"sha256": "1" * 64, "digest": "EO1:pe64:1:" + "0" * 128, "path": "p"}),
+        json.dumps({"sha256": "1" * 64, "digest": "EO1:pe64:1:zz", "path": "p", "eous": "1"}),
     ],
     ids=[
         "a list",
@@ -1080,6 +1108,7 @@ def test_match_refuses_a_file_against_digests_of_another_eous_version(
         "sha256 not hex",
         "sha256 with a newline",
         "no eous",
+        "digest not a digest",
     ],
 )
 def test_a_malformed_record_is_counted_and_skipped(
