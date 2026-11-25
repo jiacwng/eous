@@ -21,6 +21,8 @@ pip install eous
 
 Python 3.12 or later, on Linux, Windows or macOS.
 
+To build from source, install Rust and run `pip install .` in the repository.
+
 ## Usage
 
 `hash` prints a digest for each file. A directory is walked recursively.

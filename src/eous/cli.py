@@ -97,6 +97,29 @@ every file eous declines to digest is reported with its cause. A digest is
 withheld whenever the code inside stays unreadable."""
 
 
+FUNCTIONS_DESCRIPTION = """\
+Find the functions of one file and look each of them up in a file that
+`eous hash --json --functions` wrote.
+
+The stored files come first, best first, each with its function score beside
+its whole-file score. The function score is the share of the function bytes of
+both files that match, each match weighted by its score and counting from a
+score of 50.
+
+One line per function of the query follows: its address, its size, its best
+score, how many stored files hold a match, and the file and address of the
+best match. With --labels each line counts the labels of those files. With
+--names it ends with the name of the closest named match, and with where that
+match is when it is not the best match.
+
+A function starts at the target of a direct call, at the entry point, at an
+export, at a TLS callback or an ELF constructor, and at the destination of a
+direct jump from any of these. A function reached only by an indirect call is
+missed, and one that follows it is then read as part of the function before.
+Only functions of 256 bytes or more get a digest. Addresses are virtual
+addresses at the preferred image base."""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="eous",
@@ -182,21 +205,8 @@ def build_parser() -> argparse.ArgumentParser:
     functions_command = commands.add_parser(
         "functions",
         help="match the functions of a file against the functions of stored files",
-        description="Find the functions of one file and look each of them up in a file that "
-        "`eous hash --json --functions` wrote. The stored files come first, best first, "
-        "each with its function score beside its whole-file score. The function score is "
-        "the share of the function bytes of both files that match, each match weighted by "
-        "its score and counting from a score of 50. One line per function of the query "
-        "follows: its address, its size, its best score, how many stored files hold a "
-        "match, and the file and address of the best match. With --labels each line counts "
-        "the labels of those files. With --names it ends with the name of the closest "
-        "named match, and with where that match is when it is not the best match. A "
-        "function starts at the target of a direct call, at the entry point, at an export, "
-        "at a TLS callback or an ELF constructor, and at the destination of a direct jump "
-        "from any of these. A function reached only by an indirect call is missed, and one "
-        "that follows it is then read as part of the function before. Only functions of "
-        "256 bytes or more get a digest. Addresses are virtual addresses at the preferred "
-        "image base.",
+        description=FUNCTIONS_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     functions_command.add_argument("query", type=Path, metavar="FILE")
     functions_command.add_argument("known", type=Path, metavar="DIGESTS-FILE")
