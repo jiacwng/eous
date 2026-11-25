@@ -327,7 +327,7 @@ def test_a_file_compared_with_itself_scores_full(capsys: pytest.CaptureFixture[s
     assert cli.main(["compare", str(PE64), str(PE64)]) == cli.OK
     out = capsys.readouterr().out
     assert out.isascii()
-    assert "similarity:  100.0% +/- 0.5" in out
+    assert "similarity:  100.0% +/- 2.0" in out
     lines = [line for line in out.splitlines() if "in" in line]
     assert len(lines) == 2
     assert all(line.endswith("100.0%") for line in lines)
@@ -1002,7 +1002,7 @@ def test_match_reads_what_hash_json_writes(
     assert cli.main(["match", str(PE64), str(known)]) == cli.OK
     captured = capsys.readouterr()
     sha256 = hashlib.sha256(PE64.read_bytes()).hexdigest()
-    assert captured.out.splitlines() == [f"100.0% +/- 0.5  {sha256}  {PE64}"]
+    assert captured.out.splitlines() == [f"100.0% +/- 2.0  {sha256}  {PE64}"]
     assert "did not parse" not in captured.err
 
 
@@ -1111,7 +1111,7 @@ def test_a_utf_16_digests_file_and_labels_file_are_read(
     labels.write_bytes(mark + f"{sha256_at(0)}\tMirai\r\n".encode(encoding))
     assert cli.main(["match", str(PE64), str(known), "--labels", str(labels)]) == cli.OK
     captured = capsys.readouterr()
-    assert captured.out == f"100.0% +/- 0.5  Mirai  {sha256_at(0)}  one\n"
+    assert captured.out == f"100.0% +/- 2.0  Mirai  {sha256_at(0)}  one\n"
     assert "did not parse" not in captured.err
 
 
@@ -1150,7 +1150,7 @@ def test_cross_shows_the_label_of_each_side(
     args = ["cross", str(known), "--labels", str(labels)]
     assert cli.main(args) == cli.OK
     captured = capsys.readouterr()
-    assert captured.out == "100.0% +/- 0.5  Agent Tesla  one  -  two\n"
+    assert captured.out == "100.0% +/- 2.0  Agent Tesla  one  -  two\n"
     assert "1 digest without a label" in captured.err
     assert cli.main([*args, "--json"]) == cli.OK
     pair = json.loads(capsys.readouterr().out.splitlines()[1])
@@ -1169,7 +1169,7 @@ def test_match_shows_the_label_of_each_result(
     assert cli.main(["match", str(PE64), str(known), "--labels", str(labels)]) == cli.OK
     captured = capsys.readouterr()
     first, second = captured.out.splitlines()
-    assert first == f"100.0% +/- 0.5  Agent Tesla  {sha256_at(0)}  one"
+    assert first == f"100.0% +/- 2.0  Agent Tesla  {sha256_at(0)}  one"
     assert second.endswith(f"  -  {sha256_at(1)}  two")
     assert "1 digest without a label" in captured.err
 

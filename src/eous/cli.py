@@ -3,25 +3,23 @@
 from __future__ import annotations
 
 import argparse
-import codecs
 import contextlib
 import errno
 import io
 import itertools
 import json
 import os
-import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING
 
 import numpy
 
-from eous import cluster, digest, functions, toolchain
+from eous import cluster, digest, functions, records, toolchain
 
 if TYPE_CHECKING:
     from eous import report
@@ -31,11 +29,7 @@ REFUSED = 1
 USAGE = 2
 INTERNAL = 3
 
-SHA256_PATTERN = re.compile("[0-9a-f]{64}")
-
 SORTS = ("address", "size", "score", "files", "labels")
-
-ADDRESS_SPACE = 1 << 64
 
 # Windows reports a write to a closed pipe as EINVAL where POSIX raises EPIPE.
 CLOSED_PIPE = (errno.EPIPE, errno.EINVAL) if sys.platform == "win32" else (errno.EPIPE,)
@@ -62,7 +56,7 @@ lands where unrelated files already sit and carries no information.
 
 exit codes:
   0  every file digested, or the reader closed the output early
-  1  at least one file or directory refused, with the cause on stderr
+  1  at least one file or directory got no digest, with the cause on stderr
   2  usage error
   3  internal error
 
@@ -80,17 +74,17 @@ examples:
   eous functions suspect.exe functions.jsonl --labels families.tsv --sort files
 
 reading a comparison:
-  similarity:  36.5% +/- 4.2
+  similarity:  36.5% +/- 8.1
   containment: old.exe in new.exe   96.0%
                new.exe in old.exe   37.0%
 
-  The +/- figure is the margin of error, since 256 slots estimate the overlap.
-  Two results whose ranges overlap are not separable.
+  The +/- figure is the 95% margin of error, since 256 slots estimate the overlap.
+  Treat results whose ranges overlap as too close to rank.
 
   Containment runs both ways, and the gap between them says which side is the
   superset. Above a 4x size difference both figures are withheld.
 
-a refusal names its cause:
+a skipped file names its cause:
   eous: sample.macho:  unsupported_format: macho
   eous: sample.elf:    unsupported_arch: AARCH64
   eous: packed.exe:    packed: 100% of executable code is compressed
@@ -115,12 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
     hash_command = commands.add_parser(
         "hash",
         help="print a digest for each file",
-        description="Print one digest per file, or the cause when a file is refused. "
+        description="Print one digest per file, or the cause when a file is skipped. "
         "A directory is walked, and every file under it is digested.",
     )
     hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE-OR-DIR")
     hash_command.add_argument(
-        "--quiet", action="store_true", help="suppress the refusal lines on stderr"
+        "--quiet", action="store_true", help="suppress the lines for skipped files on stderr"
     )
     hash_command.add_argument(
         "--functions",
@@ -164,13 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_command = commands.add_parser(
         "cluster",
         help="group the digests in a file by similarity",
-        description="Give every digest in a file a cluster. Two digests share a cluster when "
-        "a chain of pairs scoring at least --min joins them, so a low --min chains unrelated "
-        "files together. The file is what `eous hash --json` writes. Each line is a cluster "
-        "name, then the sha256 and path of one digest. With --labels the label comes "
-        "first, and a cluster of two or more digests opens with a count of its labels. "
-        "The name is the target and a number, counted in the "
-        "order the clusters first appear, and a digest that joins nothing gets a cluster to "
+        description="Give every digest in a file a cluster by single-linkage clustering. Two "
+        "digests share a cluster when a chain of pairs scoring at least --min joins them, so "
+        "a low --min chains unrelated files together. The file is what `eous hash --json` "
+        "writes. Each line is a cluster name, then the sha256 and path of one digest. With "
+        "--labels the label comes first, and a cluster of two or more digests opens with a "
+        "count of its labels. The name is the target and a number, counted in the order the "
+        "clusters first appear, and a digest that joins nothing gets a cluster to "
         "itself. A cluster stays inside one target, since two digests compare only when "
         "their targets match, and the targets follow in the order they first appear.",
     )
@@ -198,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
         "named match, and with where that match is when it is not the best match. A "
         "function starts at the target of a direct call, at the entry point, at an export, "
         "at a TLS callback or an ELF constructor, and at the destination of a direct jump "
-        "from any of these. A function reached only through a pointer is missed, and one "
+        "from any of these. A function reached only by an indirect call is missed, and one "
         "that follows it is then read as part of the function before. Only functions of "
         "256 bytes or more get a digest. Addresses are virtual addresses at the preferred "
         "image base.",
@@ -428,114 +422,48 @@ def _run_compare(args: argparse.Namespace) -> int:
     return OK
 
 
-@dataclass(frozen=True)
-class _Entry:
-    sha256: str
-    path: str
-    eous: str
-    sketch: digest.Sketch
-    functions: object
-
-
-def _open_text(path: Path) -> TextIO:
-    # Windows tools put a byte-order mark in front of UTF-8 text, and the `>` of
-    # Windows PowerShell 5.1 writes UTF-16.
-    handle = path.open("rb")
-    mark = handle.peek(2)[:2]
-    encoding = "utf-16" if mark in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE) else "utf-8-sig"
-    return io.TextIOWrapper(handle, encoding=encoding, errors="replace")
-
-
-def _read_digests(path: Path, functions: bool = False) -> tuple[list[_Entry], int] | None:
-    entries: list[_Entry] = []
-    seen: set[str] = set()
-    unparsed = 0
-    repeated = 0
-
+def _read[T](path: Path, reader: Callable[[Path], T]) -> T | None:
     try:
-        with _open_text(path) as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except (ValueError, RecursionError):
-                    record = None
-                if not isinstance(record, dict):
-                    unparsed += 1
-                    continue
-                if record.get("reason") is not None:
-                    continue
-                entry = _as_entry(record, functions)
-                if entry is None:
-                    unparsed += 1
-                elif entry.sha256 in seen:
-                    repeated += 1
-                else:
-                    seen.add(entry.sha256)
-                    entries.append(entry)
+        return reader(path)
     except OSError as exc:
         _warn(f"{_readable(str(path))}: {exc.strerror}")
-        return None
-
-    versions = sorted({entry.eous for entry in entries})
-    if len(versions) > 1:
-        held = ", ".join(_readable(written) for written in versions)
-        _warn(f"{_readable(str(path))}: holds digests of several eous versions: {held}")
-        return None
-    if unparsed:
-        _warn(f"{_plural(unparsed, 'line')} did not parse")
-    if repeated:
-        _warn(f"{_plural(repeated, 'digest')} skipped, sha256 already read")
-    return entries, unparsed
+    except records.RecordsError as exc:
+        _warn(f"{_readable(str(path))}: {_readable(str(exc))}")
+    return None
 
 
-def _as_entry(record: dict[str, object], functions: bool) -> _Entry | None:
-    sha256 = record.get("sha256")
-    path = record.get("path")
-    written = record.get("eous")
-    text = record.get("digest")
-    if not (isinstance(sha256, str) and isinstance(path, str)):
+def _read_digests(path: Path, functions: bool = False) -> tuple[list[records.Entry], int] | None:
+    read = _read(path, lambda held: records.digests(held, functions))
+    if read is None:
         return None
-    if not (isinstance(written, str) and isinstance(text, str)):
-        return None
-    if not SHA256_PATTERN.fullmatch(sha256):
-        return None
-    try:
-        held = record.get("functions") if functions else None
-        return _Entry(sha256, path, written, digest.parse(text), held)
-    except digest.DigestError:
-        return None
+    if read.unparsed:
+        _warn(f"{_plural(read.unparsed, 'line')} did not parse")
+    if read.repeated:
+        _warn(f"{_plural(read.repeated, 'digest')} skipped, sha256 already read")
+    return read.entries, read.unparsed
+
+
+def _written_here(path: Path, entries: list[records.Entry]) -> bool:
+    if not entries or entries[0].eous == _installed_version():
+        return True
+    _warn(
+        f"{_readable(str(path))}: written by eous {_readable(entries[0].eous)}, "
+        f"this is eous {_installed_version()}"
+    )
+    return False
 
 
 def _read_labels(path: Path) -> dict[str, str] | None:
-    labels: dict[str, str] = {}
-    unparsed = 0
-
-    try:
-        with _open_text(path) as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                sha256, _, label = line.partition("\t")
-                sha256, label = sha256.strip().lower(), label.strip()
-                if not SHA256_PATTERN.fullmatch(sha256) or label in ("", "-"):
-                    unparsed += 1
-                elif labels.get(sha256, label) != label:
-                    _warn(f"{_readable(str(path))}: {sha256} carries two labels")
-                    return None
-                else:
-                    labels[sha256] = label
-    except OSError as exc:
-        _warn(f"{_readable(str(path))}: {exc.strerror}")
+    read = _read(path, records.labels)
+    if read is None:
         return None
-
+    labels, unparsed = read
     if unparsed:
         _warn(f"{_plural(unparsed, 'label line')} did not parse")
     return labels
 
 
-def _labels_for(path: Path, entries: list[_Entry]) -> dict[str, str] | None:
+def _labels_for(path: Path, entries: list[records.Entry]) -> dict[str, str] | None:
     labels = _read_labels(path)
     if labels is None:
         return None
@@ -545,26 +473,28 @@ def _labels_for(path: Path, entries: list[_Entry]) -> dict[str, str] | None:
     return labels
 
 
-def _described(entry: _Entry, labels: dict[str, str] | None) -> str:
+def _described(entry: records.Entry, labels: dict[str, str] | None) -> str:
     fields = [entry.sha256, entry.path]
     if labels is not None:
         fields = [labels.get(entry.sha256, "-"), *fields]
     return "  ".join(_readable(field) for field in fields)
 
 
-def _as_member(entry: _Entry, labels: dict[str, str] | None) -> dict[str, str | None]:
+def _as_member(entry: records.Entry, labels: dict[str, str] | None) -> dict[str, str | None]:
     label = None if labels is None else labels.get(entry.sha256)
     return {"path": entry.path, "sha256": entry.sha256, "label": label}
 
 
-def _label_counts(held: list[_Entry], labels: dict[str, str] | None) -> dict[str, int] | None:
+def _label_counts(
+    held: list[records.Entry], labels: dict[str, str] | None
+) -> dict[str, int] | None:
     if labels is None:
         return None
     counts = Counter(labels[entry.sha256] for entry in held if entry.sha256 in labels)
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-def _counted(held: list[_Entry], counts: dict[str, int]) -> str:
+def _counted(held: list[records.Entry], counts: dict[str, int]) -> str:
     parts = [f"{_readable(label)} {count}" for label, count in counts.items()]
     bare = len(held) - sum(counts.values())
     if bare:
@@ -572,7 +502,7 @@ def _counted(held: list[_Entry], counts: dict[str, int]) -> str:
     return ", ".join(parts)
 
 
-def _summary(held: list[_Entry], counts: dict[str, int]) -> str:
+def _summary(held: list[records.Entry], counts: dict[str, int]) -> str:
     return f"{_plural(len(held), 'digest')}: {_counted(held, counts)}"
 
 
@@ -592,11 +522,7 @@ def _run_match(args: argparse.Namespace) -> int:
         return USAGE
     entries, unparsed = read
     hashed_here = text != args.query
-    if hashed_here and entries and entries[0].eous != _installed_version():
-        _warn(
-            f"{_readable(str(args.known))}: written by eous {_readable(entries[0].eous)}, "
-            f"this is eous {_installed_version()}"
-        )
+    if hashed_here and not _written_here(args.known, entries):
         return USAGE
     kept = [entry for entry in entries if entry.sketch.target == query.target]
     other_target = len(entries) - len(kept)
@@ -709,21 +635,20 @@ def _run_cross(args: argparse.Namespace) -> int:
 
     for target in targets:
         members = grouped[target]
-        rows = digest.unpack_all([sketches[index] for index in members])
+        rows = digest.pack([sketches[index] for index in members])
         cardinalities = digest.cardinalities([sketches[index] for index in members])
         for offset in range(len(members) - 1):
             left = members[offset]
-            scores, spread = digest.score(
-                rows[offset + 1 :],
-                cardinalities[offset + 1 :],
-                rows[offset],
-                sketches[left].cardinality,
+            after = (offset + 1) * digest.SKETCH_BYTES
+            agreed = digest.agreement(rows[after:], rows[after - digest.SKETCH_BYTES : after])
+            scores = digest.similarity(
+                agreed, cardinalities[offset + 1 :], sketches[left].cardinality
             )
             total += len(scores)
-            for step, (score, margin) in enumerate(zip(scores, spread, strict=True)):
-                if score < args.minimum:
-                    below_minimum += 1
-                    continue
+            kept = numpy.flatnonzero(scores >= args.minimum)
+            below_minimum += len(scores) - len(kept)
+            spread = digest.margin(agreed[kept])
+            for step, score, margin in zip(kept.tolist(), scores[kept], spread, strict=True):
                 right = members[offset + 1 + step]
                 if args.json:
                     print(
@@ -822,77 +747,93 @@ def _run_cluster(args: argparse.Namespace) -> int:
 
 
 @dataclass(frozen=True)
-class _Function:
-    address: int
-    length: int
-    sketch: digest.Sketch
-
-
-@dataclass(frozen=True)
 class _Row:
-    function: _Function
+    function: records.Function
     score: float
-    holding: list[_Entry]
-    closest: _Entry
+    holding: list[records.Entry]
+    closest: records.Entry
     closest_address: int
     name: str | None
-    named: _Entry
+    named: records.Entry
     named_address: int
 
 
-def _as_functions(raw: object, target: str) -> tuple[list[_Function], int]:
-    found: list[_Function] = []
-    unparsed = 0
-    for item in raw if isinstance(raw, list) else []:
-        try:
-            address, length, text = item
-            sketch = digest.parse(text)
-        except (TypeError, ValueError, AttributeError, digest.DigestError):
-            unparsed += 1
-            continue
-        whole = type(address) is int and type(length) is int
-        bounded = whole and 0 <= address < ADDRESS_SPACE and 0 < length < ADDRESS_SPACE
-        if bounded and sketch.target == target:
-            found.append(_Function(address, length, sketch))
-        else:
-            unparsed += 1
-    return found, unparsed
-
-
 def _read_names(path: Path) -> dict[tuple[str, int], str] | None:
-    names: dict[tuple[str, int], str] = {}
-    unparsed = 0
-
-    try:
-        with _open_text(path) as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                sha256, _, rest = line.partition("\t")
-                place, _, name = rest.partition("\t")
-                sha256, name = sha256.strip().lower(), name.strip()
-                try:
-                    key = (sha256, int(place, 16))
-                except ValueError:
-                    unparsed += 1
-                    continue
-                if not SHA256_PATTERN.fullmatch(sha256) or key[1] < 0 or not name:
-                    unparsed += 1
-                elif names.get(key, name) != name:
-                    _warn(f"{_readable(str(path))}: {sha256} {key[1]:#x} carries two names")
-                    return None
-                else:
-                    names[key] = name
-    except OSError as exc:
-        _warn(f"{_readable(str(path))}: {exc.strerror}")
+    read = _read(path, records.names)
+    if read is None:
         return None
-
+    names, unparsed = read
     if unparsed:
         _warn(f"{_plural(unparsed, 'name line')} did not parse")
     return names
 
 
-def _table(found: list[_Function]) -> functions.Table:
+@dataclass(frozen=True)
+class _Stored:
+    kept: list[records.Entry]
+    held: list[records.Function]
+    owners: list[int]
+    starts: list[int]
+    other_target: int
+    bare: int
+    broken: int
+
+
+def _stored(entries: list[records.Entry], target: str) -> _Stored:
+    kept: list[records.Entry] = []
+    held: list[records.Function] = []
+    owners: list[int] = []
+    starts: list[int] = []
+    other_target = 0
+    bare = 0
+    broken = 0
+    for entry in entries:
+        if entry.sketch.target != target:
+            other_target += 1
+            continue
+        found, failed = records.functions_of(entry, target)
+        broken += failed
+        if not found:
+            bare += 1
+            continue
+        starts.append(len(held))
+        owners += [len(kept)] * len(found)
+        held += found
+        kept.append(entry)
+    return _Stored(kept, held, owners, starts, other_target, bare, broken)
+
+
+def _rows(
+    asked: list[records.Function],
+    matched: functions.Matched,
+    stored: _Stored,
+    names: dict[tuple[str, int], str],
+) -> list[_Row]:
+    kept, held, owners = stored.kept, stored.held, stored.owners
+    rows: list[_Row] = []
+    for place, function in enumerate(asked):
+        best = int(matched.closest[place])
+        named = int(matched.named[place])
+        source = named if named >= 0 else best
+        rows.append(
+            _Row(
+                function,
+                float(matched.in_file[place].max()),
+                [
+                    kept[file]
+                    for file in numpy.flatnonzero(matched.in_file[place] >= functions.MATCH)
+                ],
+                kept[owners[best]],
+                held[best].address,
+                names[kept[owners[source]].sha256, held[source].address] if named >= 0 else None,
+                kept[owners[source]],
+                held[source].address,
+            )
+        )
+    return rows
+
+
+def _table(found: list[records.Function]) -> functions.Table:
     return functions.table([(function.length, function.sketch) for function in found])
 
 
@@ -904,7 +845,9 @@ def _run_functions(args: argparse.Namespace) -> int:
     if result.digest is None or result.functions is None:
         raise RuntimeError("a digested file came back without its functions")
     query = digest.parse(result.digest)
-    asked = [_Function(f.address, f.length, digest.parse(f.digest)) for f in result.functions]
+    asked = [
+        records.Function(f.address, f.length, digest.parse(f.digest)) for f in result.functions
+    ]
     if not asked:
         size = functions.FUNCTION_BYTES
         _warn(f"{_readable(str(args.query))}: no function of {size} bytes or more")
@@ -914,36 +857,12 @@ def _run_functions(args: argparse.Namespace) -> int:
     if read is None:
         return USAGE
     entries, unparsed = read
-    if entries and entries[0].eous != _installed_version():
-        _warn(
-            f"{_readable(str(args.known))}: written by eous {_readable(entries[0].eous)}, "
-            f"this is eous {_installed_version()}"
-        )
+    if not _written_here(args.known, entries):
         return USAGE
 
-    kept: list[_Entry] = []
-    held: list[_Function] = []
-    owners: list[int] = []
-    starts: list[int] = []
-    other_target = 0
-    bare = 0
-    broken = 0
-    for entry in entries:
-        if entry.sha256 == result.sha256:
-            continue
-        if entry.sketch.target != query.target:
-            other_target += 1
-            continue
-        found, failed = _as_functions(entry.functions, query.target)
-        broken += failed
-        if not found:
-            bare += 1
-            continue
-        starts.append(len(held))
-        owners += [len(kept)] * len(found)
-        held += found
-        kept.append(entry)
-
+    stored = _stored([entry for entry in entries if entry.sha256 != result.sha256], query.target)
+    kept, held, owners = stored.kept, stored.held, stored.owners
+    other_target, bare, broken = stored.other_target, stored.bare, stored.broken
     if broken:
         _warn(f"{_plural(broken, 'stored function')} did not parse")
     if not kept:
@@ -973,7 +892,7 @@ def _run_functions(args: argparse.Namespace) -> int:
     matched = functions.match(
         _table(asked),
         _table(held),
-        numpy.array(starts, dtype=numpy.intp),
+        numpy.array(stored.starts, dtype=numpy.intp),
         numpy.array(with_names, dtype=numpy.intp),
     )
 
@@ -994,27 +913,7 @@ def _run_functions(args: argparse.Namespace) -> int:
         for place in ranked
     ]
 
-    rows: list[_Row] = []
-    for place, function in enumerate(asked):
-        best = int(matched.closest[place])
-        named = int(matched.named[place])
-        source = named if named >= 0 else best
-        rows.append(
-            _Row(
-                function,
-                float(matched.in_file[place].max()),
-                [
-                    kept[file]
-                    for file in numpy.flatnonzero(matched.in_file[place] >= functions.MATCH)
-                ],
-                kept[owners[best]],
-                held[best].address,
-                names[kept[owners[source]].sha256, held[source].address] if named >= 0 else None,
-                kept[owners[source]],
-                held[source].address,
-            )
-        )
-
+    rows = _rows(asked, matched, stored, names)
     keys: dict[str, Callable[[_Row], float]] = {
         "address": lambda row: 0.0,
         "size": lambda row: row.function.length,

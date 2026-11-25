@@ -12,14 +12,14 @@ from eous import digest
 # Two digests share a cluster when a chain of pairs scoring at least the minimum joins them.
 # Clusters come back in the order of their first member, each as positions into the input.
 def clusters(sketches: Sequence[digest.Sketch], minimum: float) -> list[list[int]]:
-    rows = digest.unpack_all(sketches)
+    rows = digest.pack(sketches)
     cardinalities = digest.cardinalities(sketches)
     labels = numpy.arange(len(sketches))
 
     for left in range(len(sketches) - 1):
-        scores, _ = digest.score(
-            rows[left + 1 :], cardinalities[left + 1 :], rows[left], sketches[left].cardinality
-        )
+        after = (left + 1) * digest.SKETCH_BYTES
+        agreed = digest.agreement(rows[after:], rows[after - digest.SKETCH_BYTES : after])
+        scores = digest.similarity(agreed, cardinalities[left + 1 :], sketches[left].cardinality)
         joined = numpy.unique(labels[left + 1 :][scores >= minimum])
         joined = joined[joined != labels[left]]
         if joined.size:
