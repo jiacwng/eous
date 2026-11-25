@@ -113,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Print one digest per file, or the cause when a file is skipped. "
         "A directory is walked, and every file under it is digested.",
     )
-    hash_command.add_argument("paths", nargs="*", type=Path, metavar="FILE-OR-DIR")
+    hash_command.add_argument("paths", nargs="+", type=Path, metavar="FILE-OR-DIR")
     hash_command.add_argument(
         "--quiet", action="store_true", help="suppress the lines for skipped files on stderr"
     )
@@ -128,8 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="score two files or two digests against each other",
         description="Score two inputs. Each may be a file or a digest string.",
     )
-    compare_command.add_argument("left", nargs="?", metavar="FILE-OR-DIGEST")
-    compare_command.add_argument("right", nargs="?", metavar="FILE-OR-DIGEST")
+    compare_command.add_argument("left", metavar="FILE-OR-DIGEST")
+    compare_command.add_argument("right", metavar="FILE-OR-DIGEST")
 
     match_command = commands.add_parser(
         "match",
@@ -138,8 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
         "The file is what `eous hash --json` writes, one record per line. Entries built "
         "for another target are skipped.",
     )
-    match_command.add_argument("query", nargs="?", metavar="FILE-OR-DIGEST")
-    match_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
+    match_command.add_argument("query", metavar="FILE-OR-DIGEST")
+    match_command.add_argument("known", type=Path, metavar="DIGESTS-FILE")
     match_command.add_argument(
         "--top", type=_count, default=10, help="how many results to print, default 10"
     )
@@ -154,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
         "target, since two digests compare only when their targets match, and the "
         "targets follow in the order they first appear.",
     )
-    cross_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
+    cross_command.add_argument("known", type=Path, metavar="DIGESTS-FILE")
 
     cluster_command = commands.add_parser(
         "cluster",
@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         "itself. A cluster stays inside one target, since two digests compare only when "
         "their targets match, and the targets follow in the order they first appear.",
     )
-    cluster_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
+    cluster_command.add_argument("known", type=Path, metavar="DIGESTS-FILE")
     cluster_command.add_argument(
         "--min",
         type=_percentage,
@@ -198,8 +198,8 @@ def build_parser() -> argparse.ArgumentParser:
         "256 bytes or more get a digest. Addresses are virtual addresses at the preferred "
         "image base.",
     )
-    functions_command.add_argument("query", nargs="?", type=Path, metavar="FILE")
-    functions_command.add_argument("known", nargs="?", type=Path, metavar="DIGESTS-FILE")
+    functions_command.add_argument("query", type=Path, metavar="FILE")
+    functions_command.add_argument("known", type=Path, metavar="DIGESTS-FILE")
     functions_command.add_argument(
         "--top", type=_count, default=10, help="how many stored files to print, default 10"
     )
@@ -267,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+        if args.command is None and not args.version:
+            parser.error("a command is required")
     except SystemExit as exc:
         return OK if exc.code == 0 else USAGE
 
@@ -283,32 +285,24 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             _quieten_stdout()
         return INTERNAL
-
-    if code is None:
-        parser.print_usage(sys.stderr)
-        return USAGE
     return code
 
 
-def _dispatch(args: argparse.Namespace) -> int | None:
+def _dispatch(args: argparse.Namespace) -> int:
     if args.version:
         print(f"eous {_installed_version()}")
         for name, value in toolchain.engines().items():
             print(f"{name} {value}")
         return OK
-    if args.command == "hash" and args.paths:
-        return _run_hash(args)
-    if args.command == "compare" and args.left and args.right:
-        return _run_compare(args)
-    if args.command == "match" and args.query and args.known:
-        return _run_match(args)
-    if args.command == "cross" and args.known:
-        return _run_cross(args)
-    if args.command == "cluster" and args.known:
-        return _run_cluster(args)
-    if args.command == "functions" and args.query and args.known:
-        return _run_functions(args)
-    return None
+    runners: dict[str, Callable[[argparse.Namespace], int]] = {
+        "hash": _run_hash,
+        "compare": _run_compare,
+        "match": _run_match,
+        "cross": _run_cross,
+        "cluster": _run_cluster,
+        "functions": _run_functions,
+    }
+    return runners[args.command](args)
 
 
 def _closed_pipe(exc: Exception) -> bool:
