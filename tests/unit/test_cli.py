@@ -1,5 +1,6 @@
 # The eous command line end to end: its commands, their output, exit codes and refusals.
 
+import codecs
 import errno
 import hashlib
 import io
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import threading
 import time
 from functools import cache
 from importlib.metadata import version
@@ -1096,6 +1098,67 @@ def labels_file(tmp_path: Path, text: str) -> Path:
     target = tmp_path / "labels.tsv"
     target.write_text(text, encoding="utf-8")
     return target
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le", "utf-16-be"])
+def test_a_utf_16_digests_file_and_labels_file_are_read(
+    encoding: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mark = {"utf-16-le": codecs.BOM_UTF16_LE, "utf-16-be": codecs.BOM_UTF16_BE}.get(encoding, b"")
+    known = tmp_path / "known.jsonl"
+    known.write_bytes(mark + record_line("one", digest_of(PE64), 0).encode(encoding))
+    labels = tmp_path / "labels.tsv"
+    labels.write_bytes(mark + f"{sha256_at(0)}\tMirai\r\n".encode(encoding))
+    assert cli.main(["match", str(PE64), str(known), "--labels", str(labels)]) == cli.OK
+    captured = capsys.readouterr()
+    assert captured.out == f"100.0% +/- 0.5  Mirai  {sha256_at(0)}  one\n"
+    assert "did not parse" not in captured.err
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a named pipe")
+def test_a_digests_file_read_from_a_pipe_keeps_its_first_bytes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = known_file(tmp_path, PE64, PE64).read_bytes()
+    pipe = tmp_path / "pipe"
+    os.mkfifo(pipe)
+    writer = threading.Thread(target=pipe.write_bytes, args=(text,), daemon=True)
+    writer.start()
+    assert cli.main(["cross", str(pipe)]) == cli.OK
+    writer.join(timeout=10)
+    assert not writer.is_alive()
+    captured = capsys.readouterr()
+    assert captured.out.startswith("100.0%")
+    assert "1 pair scored" in captured.err
+
+
+def test_a_lone_utf_16_mark_is_an_empty_digests_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    known = tmp_path / "known.jsonl"
+    known.write_bytes(codecs.BOM_UTF16_LE + b"\x00")
+    assert cli.main(["cluster", str(known), "--min", "50"]) == cli.USAGE
+    assert "contains no digest" in capsys.readouterr().err
+
+
+def test_cross_shows_the_label_of_each_side(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = digest_of(PE64)
+    known = store(tmp_path, ("one", text), ("two", text), ("alone", digest_of(ELF64)))
+    labels = labels_file(tmp_path, f"{sha256_at(0)}\tAgent Tesla\n")
+    args = ["cross", str(known), "--labels", str(labels)]
+    assert cli.main(args) == cli.OK
+    captured = capsys.readouterr()
+    assert captured.out == "100.0% +/- 0.5  Agent Tesla  one  -  two\n"
+    assert "1 digest without a label" in captured.err
+    assert cli.main([*args, "--json"]) == cli.OK
+    pair = json.loads(capsys.readouterr().out.splitlines()[1])
+    assert (pair["left_label"], pair["right_label"]) == ("Agent Tesla", None)
+    assert cli.main(["cross", str(known), "--json"]) == cli.OK
+    pair = json.loads(capsys.readouterr().out.splitlines()[1])
+    assert (pair["left_label"], pair["right_label"]) == (None, None)
+    assert cli.main([*args[:3], str(tmp_path / "absent.tsv")]) == cli.USAGE
 
 
 def test_match_shows_the_label_of_each_result(
