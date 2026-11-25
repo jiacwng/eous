@@ -146,7 +146,7 @@ count once.
 On malware, eous, tlsh and imports are close, and none of them clearly wins. imphash works on
 Windows files only. imports finds almost nothing in Linux malware, so it is left out there.
 
-`functions` was built and tried on the MalwareBazaar samples. For 400 of them, the closest
+`functions` was built and tried on 1,617 MalwareBazaar samples. For 400 of them, the closest
 other file was of the same family 334 times by function score and 331 times by file score.
 
 ### Rebuilt programs
@@ -177,8 +177,7 @@ eous hashes a file in 18.5 ms on one core. tlsh takes 17.6 ms and ssdeep 23.8 ms
 - If a file still has its list of imported functions, comparing that list works better than
   any fuzzy hash. eous is for files where that list is missing or useless: static builds,
   stripped binaries and malware.
-- On Linux programs, eous scores below tlsh and below file size, mostly when one of the two
-  builds is unoptimised.
+- On Linux programs, eous scores below tlsh and below file size.
 - eous has not been tested against obfuscated code.
 - eous only reads native code. It refuses .NET bytecode (`managed`), packed files (`packed`),
   files that are not PE or ELF (`unsupported_format`), other processors (`unsupported_arch`)
@@ -187,8 +186,7 @@ eous hashes a file in 18.5 ms on one core. tlsh takes 17.6 ms and ssdeep 23.8 ms
 - eous spots packed files by how random their code looks. A packer that avoids that gets
   through, and eous then hashes the packer instead of the program.
 - eous cannot match malware samples that share no code, even when they carry the same family
-  name. One MOTIF family, IcedID, has 135 samples whose code barely overlaps. Without it,
-  eous scores 0.671 and tlsh 0.697.
+  name. One MOTIF family, IcedID, has 135 samples whose code barely overlaps.
 - `functions` finds a function when something calls it directly or when it is an entry
   point. It misses a function reached only through a pointer.
 - Digests only compare within one target: pe32, pe64, elf32 or elf64.
