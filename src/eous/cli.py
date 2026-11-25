@@ -8,6 +8,7 @@ import errno
 import io
 import itertools
 import json
+import math
 import os
 import sys
 from collections import Counter
@@ -239,16 +240,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _count(text: str) -> int:
-    value = int(text)
+    try:
+        value = int(text)
+    except ValueError:
+        value = -1
     if value < 0:
-        raise argparse.ArgumentTypeError("a count of 0 or more")
+        raise argparse.ArgumentTypeError(f"{text!r} is not a count of 0 or more")
     return value
 
 
 def _percentage(text: str) -> float:
-    value = float(text)
+    try:
+        value = float(text)
+    except ValueError:
+        value = math.nan
     if not 0.0 <= value <= 100.0:
-        raise argparse.ArgumentTypeError("a percentage from 0 to 100")
+        raise argparse.ArgumentTypeError(f"{text!r} is not a percentage from 0 to 100")
     return value
 
 

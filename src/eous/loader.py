@@ -146,13 +146,13 @@ def read_clr(binary: Any) -> tuple[bool, bool]:
 
 def load(path: Path, entry_points: bool = False) -> Binary:
     try:
-        directory, regular = path.is_dir(), path.is_file()
+        directory, regular, present = path.is_dir(), path.is_file(), path.exists()
     except (OSError, ValueError) as exc:
         raise LoaderError("path cannot be read") from exc
     if directory:
         raise LoaderError("path is a directory")
     if not regular:
-        raise LoaderError("file is absent")
+        raise LoaderError("not a regular file" if present else "file is absent")
 
     try:
         with path.open("rb") as handle:
