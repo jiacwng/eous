@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import warnings
 from collections.abc import Callable
@@ -55,9 +56,24 @@ ELF_CONFIG.parse_relocations = False
 ELF_CONFIG.parse_notes = False
 ELF_CONFIG.parse_overlay = False
 
+PE_ENTRY_CONFIG = lief.PE.ParserConfig()
+PE_ENTRY_CONFIG.parse_signature = False
+PE_ENTRY_CONFIG.parse_imports = False
+PE_ENTRY_CONFIG.parse_rsrc = False
+PE_ENTRY_CONFIG.parse_reloc = False
+
+ELF_ENTRY_CONFIG = lief.ELF.ParserConfig()
+ELF_ENTRY_CONFIG.parse_symtab_symbols = False
+ELF_ENTRY_CONFIG.parse_symbol_versions = False
+ELF_ENTRY_CONFIG.parse_relocations = False
+ELF_ENTRY_CONFIG.parse_notes = False
+ELF_ENTRY_CONFIG.parse_overlay = False
+
+ADDRESS_SPACE = 1 << 64
+
 
 class LoaderError(Exception):
-    pass
+    sha256: str | None = None
 
 
 class UnsupportedFormatError(LoaderError):
@@ -83,9 +99,12 @@ class Binary:
     # ELF names the width in EI_CLASS and PE in the optional header magic. The machine
     # field names the instruction set, and the two disagree on the x32 ABI.
     bits: int
+    sha256: str
     sections: tuple[Section, ...]
     is_il_only: bool
     has_managed_native: bool
+    image_base: int
+    entry_points: tuple[int, ...]
 
     @property
     def target(self) -> str:
@@ -125,7 +144,7 @@ def read_clr(binary: Any) -> tuple[bool, bool]:
     return (il_only, has_native)
 
 
-def load(path: Path) -> Binary:
+def load(path: Path, entry_points: bool = False) -> Binary:
     try:
         directory, regular = path.is_dir(), path.is_file()
     except (OSError, ValueError) as exc:
@@ -148,27 +167,33 @@ def load(path: Path) -> Binary:
     except OSError as exc:
         raise LoaderError(f"cannot read: {exc.strerror}") from exc
 
-    _check_pe_sections(raw)
+    sha256 = hashlib.sha256(raw).hexdigest()
     try:
-        parsed = _parse(raw)
+        _check_pe_sections(raw)
+        parsed = _parse(raw, entry_points)
         if parsed is None:
             raise LoaderError("no recognised container")
         if isinstance(parsed, lief.PE.Binary):
-            return _load_pe(parsed, len(raw))
-        return _load_elf(parsed, len(raw))
-    except (LoaderError, MemoryError):
+            return _load_pe(parsed, len(raw), sha256, entry_points)
+        return _load_elf(parsed, len(raw), sha256, entry_points)
+    except LoaderError as exc:
+        exc.sha256 = sha256
+        raise
+    except MemoryError:
         raise
     except Exception as exc:
-        raise LoaderError(f"cannot parse: {exc}") from exc
+        failure = LoaderError(f"cannot parse: {exc}")
+        failure.sha256 = sha256
+        raise failure from exc
 
 
-def _parse(raw: bytes) -> lief.PE.Binary | lief.ELF.Binary | None:
+def _parse(raw: bytes, entry_points: bool) -> lief.PE.Binary | lief.ELF.Binary | None:
     if raw[:2] == b"MZ":
-        return lief.PE.parse(raw, PE_CONFIG)
-    return lief.ELF.parse(raw, ELF_CONFIG)
+        return lief.PE.parse(raw, PE_ENTRY_CONFIG if entry_points else PE_CONFIG)
+    return lief.ELF.parse(raw, ELF_ENTRY_CONFIG if entry_points else ELF_CONFIG)
 
 
-def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
+def _load_pe(parsed: lief.PE.Binary, size: int, sha256: str, entry_points: bool) -> Binary:
     arch = _arch(lambda: parsed.header.machine, PE_ARCHES)
     characteristics = lief.PE.Section.CHARACTERISTICS
     executable = [s for s in parsed.sections if s.has_characteristic(characteristics.MEM_EXECUTE)]
@@ -188,13 +213,28 @@ def _load_pe(parsed: lief.PE.Binary, size: int) -> Binary:
         format="pe",
         arch=arch,
         bits=_bits(lambda: parsed.optional_header.magic, PE_BITS),
+        sha256=sha256,
         sections=_ordered(sections),
         is_il_only=is_il_only,
         has_managed_native=has_managed_native,
+        image_base=parsed.optional_header.imagebase,
+        entry_points=_addresses(_pe_entry_points(parsed)) if entry_points else (),
     )
 
 
-def _load_elf(parsed: lief.ELF.Binary, size: int) -> Binary:
+def _pe_entry_points(parsed: Any) -> list[int]:
+    def exports() -> list[int]:
+        entries = parsed.get_export().entries if parsed.has_exports else []
+        return [entry.address for entry in entries if not entry.is_forwarded]
+
+    def callbacks() -> list[int]:
+        base = parsed.optional_header.imagebase
+        return [callback - base for callback in parsed.tls.callbacks] if parsed.has_tls else []
+
+    return [parsed.optional_header.addressof_entrypoint, *_listed(exports), *_listed(callbacks)]
+
+
+def _load_elf(parsed: lief.ELF.Binary, size: int, sha256: str, entry_points: bool) -> Binary:
     arch = _arch(lambda: parsed.header.machine_type, ELF_ARCHES)
     flags = lief.ELF.Section.FLAGS
     executable = [s for s in parsed.sections if s.has(flags.EXECINSTR)]
@@ -216,10 +256,37 @@ def _load_elf(parsed: lief.ELF.Binary, size: int) -> Binary:
         format="elf",
         arch=arch,
         bits=_bits(lambda: parsed.header.identity_class, ELF_BITS),
+        sha256=sha256,
         sections=_ordered(sections),
         is_il_only=False,
         has_managed_native=False,
+        image_base=0,
+        entry_points=_addresses(_elf_entry_points(parsed)) if entry_points else (),
     )
+
+
+# The dynamic exports only: the symbol table of an unstripped file names every function.
+def _elf_entry_points(parsed: Any) -> list[int]:
+    def exports() -> list[int]:
+        return [s.value for s in parsed.dynamic_symbols if s.exported and s.is_function]
+
+    def constructors() -> list[int]:
+        return [function.address for function in parsed.ctor_functions]
+
+    return [parsed.entrypoint, *_listed(exports), *_listed(constructors)]
+
+
+def _listed(read: Callable[[], list[int]]) -> list[int]:
+    try:
+        return read()
+    except MemoryError:
+        raise
+    except Exception:
+        return []
+
+
+def _addresses(found: list[int]) -> tuple[int, ...]:
+    return tuple(sorted({address for address in found if 0 <= address < ADDRESS_SPACE}))
 
 
 def _executable_segments(parsed: lief.ELF.Binary, size: int) -> list[Section]:

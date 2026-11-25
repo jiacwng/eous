@@ -13,8 +13,8 @@ def hoard(path: Path) -> report.Analysis:
     try:
         bytearray(1 << 30)
     except MemoryError:
-        return report.Analysis(path, None, report.Refusal(report.UNREADABLE, "held"))
-    return report.Analysis(path, None, None)
+        return report.Analysis(path, None, None, report.Refusal(report.UNREADABLE, "held"))
+    return report.Analysis(path, None, None, None)
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="macOS enforces no memory limit")

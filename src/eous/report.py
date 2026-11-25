@@ -28,15 +28,31 @@ class Refusal:
 
 
 @dataclass(frozen=True)
+class Function:
+    address: int
+    length: int
+    digest: str
+
+
+@dataclass(frozen=True)
 class Analysis:
     path: Path
+    sha256: str | None
     digest: str | None
     refusal: Refusal | None
+    functions: tuple[Function, ...] | None = None
 
 
 def analyse(path: Path) -> Analysis:
     try:
-        return _analyse(path)
+        return _analyse(path, functions=False)
+    except MemoryError:
+        return _refuse(path, UNREADABLE, "out of memory")
+
+
+def analyse_functions(path: Path) -> Analysis:
+    try:
+        return _analyse(path, functions=True)
     except MemoryError:
         return _refuse(path, UNREADABLE, "out of memory")
 
@@ -53,21 +69,21 @@ def overran(path: Path, seconds: float) -> Analysis:
     return _refuse(path, UNREADABLE, f"the analysis exceeded its {seconds:.0f} s time limit")
 
 
-def _analyse(path: Path) -> Analysis:
+def _analyse(path: Path, functions: bool) -> Analysis:
     try:
-        binary = loader.load(path)
+        binary = loader.load(path, entry_points=functions)
     except loader.UnsupportedFormatError as exc:
-        return _refuse(path, UNSUPPORTED_FORMAT, str(exc))
+        return _refuse(path, UNSUPPORTED_FORMAT, str(exc), exc.sha256)
     except loader.UnsupportedArchError as exc:
-        return _refuse(path, UNSUPPORTED_ARCH, str(exc))
+        return _refuse(path, UNSUPPORTED_ARCH, str(exc), exc.sha256)
     except loader.LoaderError as exc:
-        return _refuse(path, UNREADABLE, str(exc))
+        return _refuse(path, UNREADABLE, str(exc), exc.sha256)
 
     if binary.is_il_only and not binary.has_managed_native:
-        return _refuse(path, MANAGED, "il only, no native code")
+        return _refuse(path, MANAGED, "il only, no native code", binary.sha256)
 
     if not binary.sections:
-        return _refuse(path, NO_CODE, "no executable section")
+        return _refuse(path, NO_CODE, "no executable section", binary.sha256)
 
     if binary.format == "pe":
         writable = next(
@@ -75,7 +91,9 @@ def _analyse(path: Path) -> Analysis:
             None,
         )
         if writable is not None:
-            return _refuse(path, PACKED, f"executable section {writable} is writable")
+            return _refuse(
+                path, PACKED, f"executable section {writable} is writable", binary.sha256
+            )
 
     readable = [
         section
@@ -84,16 +102,26 @@ def _analyse(path: Path) -> Analysis:
     ]
     share = _compressed_share(binary.sections, readable)
     if share >= PACKED_SHARE:
-        return _refuse(path, PACKED, f"{share:.0%} of executable code is compressed")
+        return _refuse(path, PACKED, f"{share:.0%} of executable code is compressed", binary.sha256)
 
-    text = _native.digest(
-        [section.data for section in readable], loader.BITS[binary.arch], binary.target
-    )
+    bits = loader.BITS[binary.arch]
+    text = _native.digest([section.data for section in readable], bits, binary.target)
 
     if text is None:
-        return _refuse(path, UNREADABLE, "too little readable code")
+        return _refuse(path, UNREADABLE, "too little readable code", binary.sha256)
 
-    return Analysis(path=path, digest=text, refusal=None)
+    found = None
+    if functions:
+        found = tuple(
+            Function(binary.image_base + start, length, digest)
+            for start, length, digest in _native.functions(
+                [(section.virtual_address, section.data) for section in readable],
+                bits,
+                binary.target,
+                list(binary.entry_points),
+            )
+        )
+    return Analysis(path=path, sha256=binary.sha256, digest=text, refusal=None, functions=found)
 
 
 # Weighed by bytes, so a stub-sized section cannot outvote the real code.
@@ -106,5 +134,7 @@ def _compressed_share(
     return (total - sum(len(section.data) for section in readable)) / total
 
 
-def _refuse(path: Path, reason: str, detail: str) -> Analysis:
-    return Analysis(path=path, digest=None, refusal=Refusal(reason=reason, detail=detail))
+def _refuse(path: Path, reason: str, detail: str, sha256: str | None = None) -> Analysis:
+    return Analysis(
+        path=path, sha256=sha256, digest=None, refusal=Refusal(reason=reason, detail=detail)
+    )
