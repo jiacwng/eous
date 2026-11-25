@@ -1,4 +1,4 @@
-# Bump PRs for the actions, the pinned CI tools and the Rust crates; an iced-x86 bump means regenerating the vectors.
+# Bump PRs for the actions, the pinned CI tools and the Rust crates; an iced-x86 bump can move every digest.
 version: 2
 updates:
   - package-ecosystem: github-actions
