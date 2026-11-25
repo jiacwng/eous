@@ -56,7 +56,7 @@ lands where unrelated files already sit and carries no information.
 
 exit codes:
   0  every file digested, or the reader closed the output early
-  1  at least one file or directory skipped, with the cause on stderr
+  1  at least one file or directory got no digest, with the cause on stderr
   2  usage error
   3  internal error
 
@@ -79,7 +79,7 @@ reading a comparison:
                new.exe in old.exe   37.0%
 
   The +/- figure is the 95% margin of error, since 256 slots estimate the overlap.
-  Two results whose ranges overlap should be read as a tie.
+  Treat results whose ranges overlap as too close to rank.
 
   Containment runs both ways, and the gap between them says which side is the
   superset. Above a 4x size difference both figures are withheld.

@@ -102,7 +102,7 @@ Use scores to rank files, not as a yes or no. Programs written in the same langu
 library code, so unrelated programs never score near zero. In the example, fd scores 44%
 against ripgrep although it is a different program. Every ripgrep version scores higher.
 
-Exit codes: 0 when every file got a digest, 1 when a file or directory was skipped, 2 for a
+Exit codes: 0 when every file got a digest, 1 when a file or directory got no digest, 2 for a
 usage error, 3 for an internal error.
 
 ## How it works
