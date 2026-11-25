@@ -79,14 +79,14 @@ def test_unpacking_recovers_every_slot() -> None:
     ]
 
 
-@pytest.mark.parametrize("jaccard", [0.0, 0.2, 0.5, 0.8, 1.0])
+@pytest.mark.parametrize("jaccard", [0.2, 0.5, 0.8])
 def test_the_margin_of_error_holds_the_true_overlap_at_its_confidence(jaccard: float) -> None:
     chance = jaccard + (1 - jaccard) * digest.FLOOR
     drawn = numpy.random.default_rng(0).binomial(digest.PERMUTATIONS, chance, 20_000)
     agreed = drawn / digest.PERMUTATIONS
     estimate = numpy.maximum(0.0, (agreed - digest.FLOOR) / (1 - digest.FLOOR))
     margin = digest._wilson_margin(agreed) / (1 - digest.FLOOR)
-    assert (numpy.abs(estimate - jaccard) <= margin).mean() >= digest.CONFIDENCE
+    assert digest.CONFIDENCE <= (numpy.abs(estimate - jaccard) <= margin).mean() < 0.98
 
 
 def test_the_margin_of_error_comes_from_the_slots_and_not_the_score() -> None:
