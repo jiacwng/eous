@@ -1122,10 +1122,11 @@ def test_a_digests_file_read_from_a_pipe_keeps_its_first_bytes(
     text = known_file(tmp_path, PE64, PE64).read_bytes()
     pipe = tmp_path / "pipe"
     os.mkfifo(pipe)
-    writer = threading.Thread(target=pipe.write_bytes, args=(text,))
+    writer = threading.Thread(target=pipe.write_bytes, args=(text,), daemon=True)
     writer.start()
     assert cli.main(["cross", str(pipe)]) == cli.OK
-    writer.join()
+    writer.join(timeout=10)
+    assert not writer.is_alive()
     captured = capsys.readouterr()
     assert captured.out.startswith("100.0%")
     assert "1 pair scored" in captured.err
