@@ -87,17 +87,37 @@ def cardinalities(sketches: Sequence[Sketch]) -> numpy.ndarray:
     return numpy.array([sketch.cardinality for sketch in sketches], dtype=numpy.float64)
 
 
-def score(
-    rows: numpy.ndarray, row_cardinalities: numpy.ndarray, one: numpy.ndarray, cardinality: int
-) -> tuple[numpy.ndarray, numpy.ndarray]:
+def pack(sketches: Sequence[Sketch]) -> bytes:
+    return b"".join(sketch.slots.to_bytes(SKETCH_BYTES, "big") for sketch in sketches)
+
+
+def agreement(rows: bytes, one: bytes) -> numpy.ndarray:
+    differing = numpy.frombuffer(_native.differing_slots(rows, one), dtype=numpy.uint16)
+    return 1 - differing / PERMUTATIONS
+
+
+def similarity(
+    agreed: numpy.ndarray, row_cardinalities: numpy.ndarray, cardinality: float
+) -> numpy.ndarray:
     # Two unrelated sets already agree on one slot in four, so chance agreement comes off,
     # and their Jaccard cannot exceed the smaller cardinality over the larger.
-    agreed = numpy.count_nonzero(rows == one, axis=1) / PERMUTATIONS
-    similarity = numpy.maximum(0.0, (agreed - FLOOR) / (1 - FLOOR)) * 100
+    estimate = numpy.maximum(0.0, (agreed - FLOOR) / (1 - FLOOR)) * 100
     smaller = numpy.minimum(row_cardinalities, cardinality)
     larger = numpy.maximum(row_cardinalities, cardinality)
     bound = numpy.divide(smaller, larger, out=numpy.ones_like(larger), where=larger > 0)
-    return numpy.minimum(similarity, bound * 100), _wilson_margin(agreed) / (1 - FLOOR) * 100
+    capped: numpy.ndarray = numpy.minimum(estimate, bound * 100)
+    return capped
+
+
+def margin(agreed: numpy.ndarray) -> numpy.ndarray:
+    return _wilson_margin(agreed) / (1 - FLOOR) * 100
+
+
+def score(
+    rows: numpy.ndarray, row_cardinalities: numpy.ndarray, one: numpy.ndarray, cardinality: int
+) -> tuple[numpy.ndarray, numpy.ndarray]:
+    agreed = numpy.count_nonzero(rows == one, axis=1) / PERMUTATIONS
+    return similarity(agreed, row_cardinalities, cardinality), margin(agreed)
 
 
 def _wilson_margin(agreed: numpy.ndarray) -> numpy.ndarray:
@@ -108,8 +128,8 @@ def _wilson_margin(agreed: numpy.ndarray) -> numpy.ndarray:
         * numpy.sqrt(agreed * (1 - agreed) / PERMUTATIONS + Z**2 / (4 * PERMUTATIONS**2))
         / denominator
     )
-    margin: numpy.ndarray = numpy.maximum(agreed - (centre - half), centre + half - agreed)
-    return margin
+    widest: numpy.ndarray = numpy.maximum(agreed - (centre - half), centre + half - agreed)
+    return widest
 
 
 def compare(left: Sketch, right: Sketch) -> Scores:

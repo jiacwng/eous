@@ -709,21 +709,21 @@ def _run_cross(args: argparse.Namespace) -> int:
 
     for target in targets:
         members = grouped[target]
-        rows = digest.unpack_all([sketches[index] for index in members])
+        rows = digest.pack([sketches[index] for index in members])
         cardinalities = digest.cardinalities([sketches[index] for index in members])
         for offset in range(len(members) - 1):
             left = members[offset]
-            scores, spread = digest.score(
-                rows[offset + 1 :],
-                cardinalities[offset + 1 :],
-                rows[offset],
-                sketches[left].cardinality,
+            first = offset * digest.SKETCH_BYTES
+            agreed = digest.agreement(rows, rows[first : first + digest.SKETCH_BYTES])
+            agreed = agreed[offset + 1 :]
+            scores = digest.similarity(
+                agreed, cardinalities[offset + 1 :], sketches[left].cardinality
             )
             total += len(scores)
-            for step, (score, margin) in enumerate(zip(scores, spread, strict=True)):
-                if score < args.minimum:
-                    below_minimum += 1
-                    continue
+            kept = numpy.flatnonzero(scores >= args.minimum)
+            below_minimum += len(scores) - len(kept)
+            spread = digest.margin(agreed[kept])
+            for step, score, margin in zip(kept.tolist(), scores[kept], spread, strict=True):
                 right = members[offset + 1 + step]
                 if args.json:
                     print(

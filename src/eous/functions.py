@@ -29,23 +29,17 @@ class Matched:
 
 
 def table(functions: Sequence[tuple[int, digest.Sketch]]) -> Table:
-    packed = b"".join(sketch.slots.to_bytes(digest.SKETCH_BYTES, "big") for _, sketch in functions)
+    sketches = [sketch for _, sketch in functions]
     return Table(
         numpy.array([length for length, _ in functions], dtype=numpy.float64),
-        digest.cardinalities([sketch for _, sketch in functions]),
-        packed,
+        digest.cardinalities(sketches),
+        digest.pack(sketches),
     )
 
 
 def scores(stored: Table, sketch: bytes, cardinality: float) -> numpy.ndarray:
-    counted = _native.differing_slots(stored.sketches, sketch)
-    agreed = 1 - numpy.frombuffer(counted, dtype=numpy.uint16) / digest.PERMUTATIONS
-    similarity = numpy.maximum(0.0, (agreed - digest.FLOOR) / (1 - digest.FLOOR)) * 100
-    smaller = numpy.minimum(stored.cardinalities, cardinality)
-    larger = numpy.maximum(stored.cardinalities, cardinality)
-    bound = numpy.divide(smaller, larger, out=numpy.ones_like(larger), where=larger > 0)
-    capped: numpy.ndarray = numpy.minimum(similarity, bound * 100)
-    return capped
+    agreed = digest.agreement(stored.sketches, sketch)
+    return digest.similarity(agreed, stored.cardinalities, cardinality)
 
 
 # MCRIT's convention. Each function takes its best match in the other file, a match counts
